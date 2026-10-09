@@ -57,15 +57,18 @@ python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-front-
 
 What it does:
 
-1. Auto-detects the person against the light backdrop (or uses `--crop`), crops to a 4:5 frame with the person centred, and scales to **768×960**.
-2. Whitens the backdrop with `colorlevels=rimax=0.98:gimax=0.98:bimax=0.98`, so `mix-blend-mode: multiply` melts it into the paper.
-3. Makes a seamless loop from the first ~10 s. The last 0.5 s of picture is cross-faded into the first 0.5 s with ffmpeg `xfade`. The audio gets the same cross-fade, sample-accurate and equal-power, in **numpy** (not `acrossfade`). Nothing is retimed, so lip-sync holds.
-4. Exports `public/hero/hero.mp4` (H.264 yuv420p CRF 24 `-preset slow`, AAC 96k, `+faststart`) and `public/hero/hero.webm` (VP9 CRF 36, Opus 80k).
-5. Writes `public/portrait-bust.webp` (480×600 head-to-shirt; from `--photo` or from the sharpest frame) and `public/og.jpg` (1200×630).
+1. **Crop:** detects the person against the light backdrop across 24 sampled frames, or uses `--crop`. It builds a **768:960 (4:5)** box around the whole body with `--margin` (default 3.5 %) of head and foot room, centred on the torso. Landscape and **portrait** sources both work. When the box is wider or taller than the source (a 720×1280 portrait clip needs 920×1150), the missing area is **padded with white** rather than cutting off the head or feet. The picture is then feathered into that padding (`--feather`, default 72 px) so no seam shows. Scaling uses Lanczos with accurate rounding, and the script warns if the source would need upscaling.
+2. **Whiten:** `colorlevels`, with the max level set automatically from the measured backdrop (capped at 0.98; override with `--whiten-max`). An off-white wall becomes pure white, so `mix-blend-mode: multiply` melts it into the paper.
+3. **Loop:** by default the whole clip (≤ 15 s) is used, with no stretching or retiming. The last 0.5 s of picture is cross-faded into the first 0.5 s with ffmpeg `xfade`, and the audio gets the identical cross-fade, sample-accurate and equal-power, in **numpy** (not `acrossfade`). The script finds where speech starts and ends and checks that both fade windows are silent, so the loop point never falls mid-word. If they aren't, it shortens the fade or stops with an error. A frame-integrity check guards against ffmpeg filter bugs. (On ffmpeg 7.1, `fps → colorlevels → pad` corrupts frames, so `fps` runs last.)
+4. **Export:** `public/hero/hero.mp4` (H.264 yuv420p CRF 24 `-preset slow`, AAC 96k, `+faststart`) and `public/hero/hero.webm` (VP9 CRF 36, Opus 80k).
+5. **Stills:** `public/portrait-bust.webp` (480×600 head-to-shirt, from `--photo` or the sharpest frame) and `public/og.jpg` (1200×630, from the sharpest frame or `--og-time`).
+
+Current build: `python3 scripts/build-hero-assets.py inputs/intro.mp4 --photo inputs/photo-front-striped.jpg --photo-crop 2092:2615:490:572`
+(source 720×1280 @ 24 fps, 10 s, speech 0.59–9.37 s → a 9.5 s loop).
 
 Then set `HERO.enabled = true` in `src/lib/data.ts`.
 
-**Video spec:** 8–15 s, landscape 16:9 (1920×1080 ideal), the person standing centred and fully visible head-to-toe against a plain white or light wall, even lighting, a clear voice, and a brief pause at the start and end.
+**Video spec:** 8–15 s, landscape 16:9 or portrait 9:16 (≥ 720 px wide), the person standing centred and fully visible head-to-toe against a plain white or light wall, even lighting, a clear voice, and a brief pause at the start and end.
 
 ## Deploy (static)
 

@@ -103,41 +103,118 @@ def even(x: float) -> int:
 
 # ───────────────────────────── 1. crop detection ─────────────────────────────
 
-def detect_crop(src: Path, meta: dict, start: float, dur: float) -> tuple[int, int, int, int]:
-    """Bounding box of everything darker than the backdrop across sampled frames,
-    expanded to a 4:5 box centred on the person. Returns (w, h, x, y) in source px."""
-    sw = 320
+class Box:
+    """Crop box in source pixels. May extend past the frame; the overflow is
+    filled with white padding (never cut the head or feet)."""
+
+    def __init__(self, w: int, h: int, x: int, y: int, src_w: int, src_h: int):
+        self.w, self.h, self.x, self.y = w, h, x, y
+        self.pad_x = max(0, -x, x + w - src_w)
+        self.pad_y = max(0, -y, y + h - src_h)
+        self.pad_x = even(self.pad_x + 1) if self.pad_x else 0
+        self.pad_y = even(self.pad_y + 1) if self.pad_y else 0
+
+    def filter(self) -> str:
+        if self.pad_x or self.pad_y:
+            px, py = self.pad_x, self.pad_y
+            return (f"pad=iw+{2 * px}:ih+{2 * py}:{px}:{py}:color=white,"
+                    f"crop={self.w}:{self.h}:{self.x + px}:{self.y + py}")
+        return f"crop={self.w}:{self.h}:{self.x}:{self.y}"
+
+    def __str__(self) -> str:
+        pad = f" (+white padding {self.pad_x}px L/R, {self.pad_y}px T/B)" if (self.pad_x or self.pad_y) else ""
+        return f"{self.w}x{self.h} at ({self.x},{self.y}){pad}"
+
+
+def detect_crop(src: Path, meta: dict, start: float, dur: float, margin: float) -> tuple[Box, dict]:
+    """Union bounding box of everything darker than the backdrop across sampled
+    frames → a 768:960 box that contains the whole person (head to toe) with
+    `margin` headroom/footroom, centred on the person. Works for landscape and
+    portrait sources; if the box is wider/taller than the frame it is padded
+    with white instead of cutting the person."""
+    sw = 360
     frames = grab_gray_frames(src, start, dur, 24, sw, meta["w"], meta["h"])
     if frames.size == 0:
         sys.exit("✗ could not read frames for crop detection — pass --crop W:H:X:Y")
-    bg = np.percentile(frames, 90)  # the backdrop is the brightest large area
-    mask = (frames < bg - 28).any(axis=0)
-    # clean speckle: keep rows/cols with a meaningful amount of foreground
-    rows = np.where(mask.sum(1) > max(2, mask.shape[1] * 0.01))[0]
-    cols = np.where(mask.sum(0) > max(2, mask.shape[0] * 0.01))[0]
+    n, sh, _ = frames.shape
+    # backdrop level from the top band (wall), robust to the person's head
+    bg = float(np.percentile(frames[:, : max(4, sh // 12)], 75))
+    mask = (frames.astype(np.int16) < bg - 30).any(axis=0)
+    # drop thin noise: rows/cols need a meaningful number of foreground pixels
+    rows = np.where(mask.sum(1) >= max(2, int(sw * 0.012)))[0]
+    cols = np.where(mask.sum(0) >= max(2, int(sh * 0.012)))[0]
     if rows.size == 0 or cols.size == 0:
         sys.exit("✗ could not find the person — pass --crop W:H:X:Y")
     k = meta["w"] / sw
     y0, y1 = rows[0] * k, (rows[-1] + 1) * k
     x0, x1 = cols[0] * k, (cols[-1] + 1) * k
-    # centre horizontally on the mass of the person (robust to hand gestures)
-    col_mass = mask.sum(0).astype(float)
-    cx = (np.arange(sw) * col_mass).sum() / col_mass.sum() * k
-    pad = 0.04 * (y1 - y0)
-    y0, y1 = max(0, y0 - pad), min(meta["h"], y1 + pad)
-    h = y1 - y0
-    w = max(h * OUT_W / OUT_H, (x1 - x0) + 2 * pad)
+    body_h = y1 - y0
+    # horizontal centre: median column of the torso band (robust to gestures)
+    band = mask[rows[0] + (rows[-1] - rows[0]) // 5 : rows[0] + (rows[-1] - rows[0]) * 3 // 5]
+    cxs = np.where(band.any(axis=0))[0]
+    cx = (np.median(cxs) if cxs.size else (cols[0] + cols[-1]) / 2) * k
+    h = body_h * (1 + 2 * margin)
+    w = max(h * OUT_W / OUT_H, (x1 - x0) * (1 + margin))
     h = w * OUT_H / OUT_W
-    if h > meta["h"]:
-        h = meta["h"]
-        w = h * OUT_W / OUT_H
-    if w > meta["w"]:
-        w = meta["w"]
-        h = w * OUT_H / OUT_W
     cy = (y0 + y1) / 2
-    x = min(max(0, cx - w / 2), meta["w"] - w)
-    y = min(max(0, cy - h / 2), meta["h"] - h)
-    return even(w), even(h), even(x), even(y)
+    x, y = cx - w / 2, cy - h / 2
+    # if the box fits inside the frame, keep it inside (no needless padding)
+    if w <= meta["w"]:
+        x = min(max(0, x), meta["w"] - w)
+    if h <= meta["h"]:
+        y = min(max(0, y), meta["h"] - h)
+    box = Box(even(w), even(h), even(x), even(y), meta["w"], meta["h"])
+    info = {"bg": bg, "person": (int(x0), int(y0), int(x1), int(y1))}
+    return box, info
+
+
+def backdrop_levels(src: Path, t: float, meta: dict) -> tuple[float, float, float]:
+    """Per-channel backdrop brightness (0–1) from the top band of the frame."""
+    raw = ffmpeg("-ss", f"{t}", "-i", str(src), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-", capture=True)
+    f = np.frombuffer(raw, np.uint8).reshape(meta["h"], meta["w"], 3)
+    top = f[: max(8, meta["h"] // 14)].reshape(-1, 3)
+    lv = np.percentile(top, 60, axis=0) / 255.0
+    return float(lv[0]), float(lv[1]), float(lv[2])
+
+
+def write_edge_veil(path: Path, box: "Box", src_w: int, feather: int) -> bool:
+    """White RGBA overlay (OUT_W×OUT_H) that hides the seam between the white
+    padding and the real backdrop: alpha 1 over the padding, ramping smoothly
+    (smoothstep) to 0 over `feather` output px into the picture. Returns False
+    when no side padding was needed."""
+    k = OUT_W / box.w
+    left = max(0.0, -box.x) * k
+    right = max(0.0, box.x + box.w - src_w) * k
+    if left <= 0 and right <= 0:
+        return False
+    xs = np.arange(OUT_W, dtype=np.float64) + 0.5
+    a = np.zeros(OUT_W)
+    if left > 0:
+        t = np.clip((left + feather - xs) / feather, 0, 1)
+        a = np.maximum(a, t * t * (3 - 2 * t))
+    if right > 0:
+        t = np.clip((xs - (OUT_W - right - feather)) / feather, 0, 1)
+        a = np.maximum(a, t * t * (3 - 2 * t))
+    rgba = np.empty((OUT_H, OUT_W, 4), np.uint8)
+    rgba[..., :3] = 255
+    rgba[..., 3] = np.round(a * 255).astype(np.uint8)[None, :]
+    path.write_bytes(rgba.tobytes())
+    return True
+
+
+def speech_bounds(a: np.ndarray, thresh_db: float = -45.0) -> tuple[float, float] | None:
+    """First/last time (s) the 5 ms RMS rises above thresh_db relative to the peak."""
+    mono = a.mean(axis=1)
+    w = SR // 200
+    n = mono.size // w
+    if n == 0:
+        return None
+    rms = np.sqrt((mono[: n * w].reshape(n, w) ** 2).mean(axis=1))
+    db = 20 * np.log10(rms + 1e-9)
+    on = np.where(db > db.max() + thresh_db)[0]
+    if on.size == 0:
+        return None
+    return on[0] * w / SR, (on[-1] + 1) * w / SR
 
 
 # ───────────────────────────── 3. audio crossfade ─────────────────────────────
@@ -201,16 +278,16 @@ def make_portrait_from_photo(photo: Path, crop: str | None, out: Path) -> None:
     ffmpeg("-i", str(photo), "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "86", str(out))
 
 
-def make_portrait_from_video(src: Path, crop: str, t: float, out: Path) -> None:
+def make_portrait_from_video(src: Path, crop: str, t: float, out: Path, whiten: str = WHITEN) -> None:
     # head-to-shirt: top ~46% of the 768×960 frame, 4:5, centred
-    vf = (f"{crop},scale={OUT_W}:{OUT_H},{WHITEN},"
+    vf = (f"{whiten},{crop},scale={OUT_W}:{OUT_H}:flags=lanczos,"
           f"crop=354:442:{(OUT_W - 354) // 2}:24,scale=480:600:flags=lanczos")
     ffmpeg("-ss", f"{t}", "-i", str(src), "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "86", str(out))
 
 
 def make_og(still_src: list[str], out: Path, vf_chain: str) -> None:
     """1200×630: white card with the person centred-right (still is already white-backed)."""
-    ffmpeg(*still_src, "-frames:v", "1",
+    ffmpeg(*still_src, "-frames:v", "1", "-update", "1",
            "-filter_complex",
            f"[0:v]{vf_chain},scale=-2:630[p];color=c=white:s=1200x630[bg];"
            f"[bg][p]overlay=x=(W-w)/2:y=0:format=auto,format=yuvj420p",
@@ -224,9 +301,16 @@ def main() -> None:
     ap.add_argument("input", nargs="?", type=Path, help="intro video (mp4/mov)")
     ap.add_argument("--out", type=Path, default=Path("public"), help="public/ directory (default: public)")
     ap.add_argument("--start", type=float, default=0.0, help="clip start in seconds (default 0)")
-    ap.add_argument("--duration", type=float, default=10.0, help="window length before looping (default 10)")
+    ap.add_argument("--duration", type=float, default=None,
+                    help="window length before looping (default: whole clip if ≤ 15 s, else 10 s)")
     ap.add_argument("--fade", type=float, default=0.5, help="loop cross-fade in seconds (default 0.5)")
     ap.add_argument("--crop", help="W:H:X:Y crop in source pixels (skips auto-detect)")
+    ap.add_argument("--margin", type=float, default=0.035, help="head/foot room as a fraction of body height (default 0.035)")
+    ap.add_argument("--feather", type=int, default=72,
+                    help="output px over which the picture fades into the white side padding (default 72)")
+    ap.add_argument("--whiten-max", type=float, default=None,
+                    help="colorlevels max for all channels (default: auto from the backdrop, capped at 0.98)")
+    ap.add_argument("--og-time", type=float, default=None, help="frame time (s) for og.jpg (default: sharpest frame)")
     ap.add_argument("--photo", type=Path, help="optional photo for portrait-bust.webp")
     ap.add_argument("--photo-crop", help="W:H:X:Y head-to-shirt crop of --photo (4:5 recommended)")
     ap.add_argument("--portrait-only", action="store_true", help="only build portrait-bust.webp (+ og.jpg) from --photo")
@@ -254,34 +338,85 @@ def main() -> None:
     meta = probe(src)
     print(f"• source {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s, audio={meta['audio']}")
 
-    D = min(args.duration, max(0.0, meta["duration"] - args.start))
+    dur_default = meta["duration"] - args.start if meta["duration"] - args.start <= 15 else 10.0
+    D = min(args.duration or dur_default, max(0.0, meta["duration"] - args.start))
     F = args.fade
     if D < 4 * F:
         sys.exit(f"✗ usable clip ({D:.2f}s) is too short for a {F}s cross-fade")
-    # snap D to whole frames so picture and sound have identical length
+    # snap D (down) and F to whole frames so picture and sound have identical length
     fps = meta["fps"]
-    D = int(D * fps) / fps
+    D = int(D * fps + 1e-6) / fps
     F = round(F * fps) / fps
+
+    # ── speech-aware loop point: the cross-fade windows [0,F] and [D−F,D] must be silence
+    audio = read_audio(src, args.start, D) if meta["audio"] else None
+    if audio is not None:
+        sb = speech_bounds(audio)
+        if sb:
+            on, off = sb
+            print(f"• speech {on:.3f}s → {off:.3f}s (lead silence {on:.2f}s, tail silence {D - off:.2f}s)")
+            room = min(on, D - off) - 0.02
+            if room < F:
+                newF = max(1 / fps, int(room * fps) / fps)
+                print(f"  ! {F:.3f}s fade would overlap speech — shortening fade to {newF:.3f}s")
+                F = newF
+            if off > D - F:
+                sys.exit("✗ speech runs into the loop point — pass a longer --duration")
+            print(f"  ✓ loop point in silence: fade windows [0, {F:.3f}] and [{D - F:.3f}, {D:.3f}] are speech-free")
 
     if args.crop:
         cw, ch, cx, cy = (int(v) for v in args.crop.split(":"))
+        box = Box(cw, ch, cx, cy, meta["w"], meta["h"])
     else:
-        cw, ch, cx, cy = detect_crop(src, meta, args.start, D)
-    crop = f"crop={cw}:{ch}:{cx}:{cy}"
-    print(f"• crop {crop}  → scale {OUT_W}×{OUT_H}")
+        box, det = detect_crop(src, meta, args.start, D, args.margin)
+        print(f"• backdrop ≈ {det['bg']:.0f}/255, person bbox {det['person']}")
+    crop = box.filter()
+    scale_k = OUT_W / box.w
+    print(f"• crop {box}  → scale ×{scale_k:.3f} to {OUT_W}×{OUT_H}")
+    if scale_k > 1.0:
+        print("  ! source crop is smaller than the output — this upscales; consider a higher-res source")
+
+    if args.whiten_max:
+        lv = (args.whiten_max,) * 3
+    else:
+        bl = backdrop_levels(src, args.start + D / 2, meta)
+        lv = tuple(min(0.98, max(0.80, c - 0.01)) for c in bl)
+        print(f"• backdrop RGB ≈ {tuple(round(c * 255) for c in bl)} → colorlevels max {tuple(round(c, 3) for c in lv)}")
+    whiten = f"colorlevels=rimax={lv[0]:.3f}:gimax={lv[1]:.3f}:bimax={lv[2]:.3f}"
 
     tmp = Path(tempfile.mkdtemp(prefix="hero-"))
     try:
         # ── picture: crop → scale → whiten → seamless xfade loop (lossless intermediate)
-        base = f"fps={meta['fps_str']},{crop},scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1,{WHITEN}"
-        fc = (f"[0:v]{base},split[a][b];"
+        # NB: keep `fps` LAST — on ffmpeg 7.1, fps → colorlevels → pad corrupts frames (black blocks).
+        still_chain = f"{whiten},{crop},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1"
+        veil = tmp / "veil.rgba"
+        has_veil = write_edge_veil(veil, box, meta["w"], args.feather)
+        veil_in = ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{OUT_W}x{OUT_H}", "-i", str(veil)] if has_veil else []
+        # [still] = whitened, cropped, scaled picture (+ edge veil when padded)
+        still_fc = (f"[0:v]{still_chain}[s0];[s0][1:v]overlay=eof_action=repeat:format=auto,format=yuv420p[still]"
+                    if has_veil else f"[0:v]{still_chain},format=yuv420p[still]")
+        if has_veil:
+            print(f"• feathering picture into the white padding over {args.feather}px")
+        fc = (f"{still_fc};[still]fps={meta['fps_str']},split[a][b];"
               f"[a]trim=start={F}:end={D},setpts=PTS-STARTPTS,fps={meta['fps_str']}[body];"
               f"[b]trim=start=0:end={F},setpts=PTS-STARTPTS,fps={meta['fps_str']}[head];"
               f"[body][head]xfade=transition=fade:duration={F}:offset={D - 2 * F},format=yuv420p[v]")
         video_tmp = tmp / "loop.mkv"
         print("• building seamless picture loop (xfade)")
-        ffmpeg("-ss", f"{args.start}", "-t", f"{D}", "-i", str(src), "-filter_complex", fc,
+        ffmpeg("-ss", f"{args.start}", "-t", f"{D}", "-i", str(src), *veil_in, "-filter_complex", fc,
                "-map", "[v]", "-an", "-c:v", "ffv1", str(video_tmp))
+
+        # integrity check: a body frame of the loop must match the same source frame rendered directly
+        t_chk = round((D / 2) * fps) / fps
+        def _gray(args: list[str]) -> np.ndarray:
+            raw = ffmpeg(*args, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-", capture=True)
+            return np.frombuffer(raw, np.uint8).astype(np.int16)
+        ref = _gray(["-ss", f"{args.start + t_chk}", "-i", str(src), *veil_in, "-filter_complex", still_fc, "-map", "[still]"])
+        got = _gray(["-i", str(video_tmp), "-vf", f"select=eq(n\\,{int(round((t_chk - F) * fps))})"])
+        diff = float(np.abs(ref - got).mean()) if ref.size == got.size else 999.0
+        print(f"• integrity check @ {t_chk:.2f}s: mean |Δ| = {diff:.2f}")
+        if diff > 6:
+            sys.exit("✗ loop frames don't match the source render — ffmpeg filter issue; aborting")
 
         # ── sound: sample-accurate equal-power crossfade in numpy
         loop_len = D - F
@@ -289,7 +424,7 @@ def main() -> None:
         n_total = int(round(D * SR))
         if meta["audio"]:
             print("• building seamless audio loop (numpy)")
-            a = read_audio(src, args.start, D)
+            a = audio
         else:
             print("• no audio stream — writing silence")
             a = np.zeros((n_total, 2), np.float32)
@@ -316,10 +451,13 @@ def main() -> None:
         else:
             t = clearest_frame_time(src, crop, args.start, D)
             print(f"• portrait from clearest frame @ {t:.2f}s")
-            make_portrait_from_video(src, crop, t, portrait)
-        t_og = clearest_frame_time(src, crop, args.start, D)
-        make_og(["-ss", f"{t_og}", "-i", str(src)], out / "og.jpg",
-                f"{crop},scale={OUT_W}:{OUT_H},{WHITEN}")
+            make_portrait_from_video(src, crop, t, portrait, whiten)
+        t_og = args.og_time if args.og_time is not None else clearest_frame_time(src, crop, args.start, D)
+        print(f"• og.jpg from frame @ {t_og:.2f}s")
+        og_still = tmp / "og-still.png"
+        ffmpeg("-ss", f"{t_og}", "-i", str(src), *veil_in, "-filter_complex", still_fc, "-map", "[still]",
+               "-frames:v", "1", "-update", "1", str(og_still))
+        make_og(["-i", str(og_still)], out / "og.jpg", "null")
 
         for p in (mp4, webm, portrait, out / "og.jpg"):
             print(f"✓ {p}  ({p.stat().st_size / 1024:.0f} KB)")

@@ -269,9 +269,9 @@ export default function About() {
         }
         @media (max-width: 720px){
           .about-grid{grid-template-columns:minmax(0,1fr)}
-          .about-center{min-height:520px;order:-1;margin-top:-40px}
-          .lanyard{top:-60px}
-          .strap{height:116px}
+          .about-center{min-height:500px;order:-1;margin-top:-40px}
+          .lanyard{top:-16px}
+          .strap{height:64px}
         }
       `}</style>
     </section>

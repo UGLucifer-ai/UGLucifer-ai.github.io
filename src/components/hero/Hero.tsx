@@ -179,9 +179,10 @@ export default function Hero() {
         .hero{position:relative;min-height:100svh;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;overflow:hidden;padding-top:84px}
         .hero-ghost{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);margin:0;font-weight:800;letter-spacing:-.06em;line-height:.8;font-size:clamp(120px,30vw,520px);color:transparent;-webkit-text-stroke:1.5px rgba(13,13,13,.13);white-space:nowrap;pointer-events:none;user-select:none;animation:ghostIn 1.6s var(--ease) both}
         @keyframes ghostIn{from{opacity:0;letter-spacing:-.02em}to{opacity:1}}
-        .hero-media{position:absolute;left:50%;bottom:0;transform:translateX(-50%);height:min(96svh,1040px);aspect-ratio:768/960;max-width:100vw}
+        /* no transform/opacity/z-index on .hero-media: it must not form a stacking context, or multiply can't reach the paper */
+        .hero-media{position:absolute;left:0;right:0;bottom:0;margin-inline:auto;height:min(96svh,1040px);width:calc(min(96svh,1040px) * .8);max-width:100vw}
         .hero-media--empty{pointer-events:none}
-        .hero-video{width:100%;height:100%;object-fit:cover;mix-blend-mode:multiply;animation:heroRise 1.4s var(--ease) both}
+        .hero-video{width:100%;height:100%;object-fit:cover;mix-blend-mode:multiply;-webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent),linear-gradient(180deg,#000 95%,transparent);-webkit-mask-composite:source-in;mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent),linear-gradient(180deg,#000 95%,transparent);mask-composite:intersect;animation:heroRise 1.4s var(--ease) both}
         @keyframes heroRise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
         .hero-sound{position:absolute;right:6%;bottom:22%;width:46px;height:46px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;transition:transform .5s var(--ease)}
         .hero-sound:hover{transform:scale(1.06)}
@@ -192,15 +193,15 @@ export default function Hero() {
         .hero-title{margin-top:14px;font-size:clamp(40px,6.2vw,96px);max-width:9ch}
         .hero-ctas{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
         @media (max-width: 860px){
-          .hero{justify-content:flex-start;padding-top:76px}
-          .hero-media{position:relative;left:auto;transform:none;height:62svh}
+          .hero{justify-content:flex-start;padding-top:76px;min-height:auto}
+          .hero-media{position:relative;left:auto;right:auto;height:62svh;width:calc(62svh * .8)}
           .hero-media--empty{height:28svh}
           .hero-ghost{top:34svh}
-          .hero-copy{flex-direction:column;align-items:flex-start;margin-top:-6svh}
+          .hero-copy{flex-direction:column;align-items:flex-start;margin-top:8px}
           .hero-title{max-width:none}
           .hero-ctas{justify-content:flex-start}
           .hero-sound{right:4%;bottom:12%}
-          .hero--novideo{justify-content:flex-end}
+          .hero--novideo{justify-content:flex-end;min-height:100svh}
           .hero--novideo .hero-media--empty{display:none}
           .hero--novideo .hero-ghost{top:42%}
           .hero--novideo .hero-copy{margin-top:0}

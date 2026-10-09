@@ -214,7 +214,7 @@ export const SUMMARY_POINTS: string[] = [
 ];
 
 export const HERO: HeroMedia = {
-  enabled: false, // TODO(video): true after `python3 scripts/build-hero-assets.py inputs/intro.mp4`
+  enabled: true, // built from inputs/intro.mp4 by scripts/build-hero-assets.py
   webm: "/hero/hero.webm",
   mp4: "/hero/hero.mp4",
   poster: "/portrait-bust.webp",
