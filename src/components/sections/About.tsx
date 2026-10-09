@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { HAS, ID_CARD, PROFILE, QUICK_FACTS, asset, sectionIndex } from "@/lib/data";
 import { useReducedMotion } from "@/lib/hooks";
-import { LanyardSim, PHYS } from "@/lib/lanyard-sim";
+import type { LanyardSim } from "@/lib/lanyard-sim";
 import Pill from "@/components/ui/Pill";
 
 const TAP_PX = 6; // a press that moves less than this…
@@ -27,235 +27,249 @@ function useLanyard(
   useEffect(() => {
     const lan = lanyardRef.current;
     if (!lan || !enabled) return;
-    const section = lan.closest("section");
-    const badge = lan.querySelector<HTMLElement>(".badge");
-    const card = lan.querySelector<HTMLElement>(".idcard");
-    const strapProbe = lan.querySelector<HTMLElement>(".strap");
-    const svg = lan.querySelector<SVGSVGElement>(".strap-svg");
-    const ribbonPath = svg?.querySelector<SVGPathElement>(".ribbon");
-    const textPath = svg?.querySelector<SVGTextPathElement>("textPath");
-    const coil = svg?.querySelector<SVGPathElement>(".coil");
-    const reel = svg?.querySelector<SVGGElement>(".reel");
-    const measure = svg?.querySelector<SVGTextElement>(".strap-measure");
-    if (!section || !badge || !card || !strapProbe || !svg || !ribbonPath || !textPath || !coil || !reel || !measure) return;
-
-    const HALF_W = 150; // anchor x in .lanyard coordinates (lanyard is 300 px wide)
-    const CARD_TOP = 32; // clip (26) + gap (6)
-    const COIL_MIN = 16;
-    let sim: LanyardSim;
-    let strapH = 0;
-    const build = () => {
-      const h = strapProbe.offsetHeight;
-      if (h === strapH) return;
-      strapH = h;
-      const mobile = window.innerWidth <= 720;
-      sim = new LanyardSim({
-        ribbonLen: Math.max(24, strapH - 4 - COIL_MIN), // clip top lands where the static layout puts it
-        coilMin: COIL_MIN,
-        coilMax: mobile ? 220 : 300,
-        cardW: card.offsetWidth || 300,
-        cardH: card.offsetHeight || 404,
-        cardTop: CARD_TOP,
-      });
-      updateBounds(false);
-    };
-
-    // bounds, in sim coordinates (anchor = 0,0)
-    const toSim = (clientX: number, clientY: number) => {
-      const r = lan.getBoundingClientRect();
-      return { x: clientX - r.left - HALF_W, y: clientY - r.top };
-    };
-    const updateBounds = (vertical: boolean) => {
-      const r = lan.getBoundingClientRect();
-      const sr = section.getBoundingClientRect();
-      const vw = document.documentElement.clientWidth;
-      sim.bounds = {
-        minX: Math.max(sr.left, 0) + EDGE - r.left - HALF_W,
-        maxX: Math.min(sr.right, vw) - EDGE - r.left - HALF_W,
-        minY: vertical ? Math.max(sr.top, 0) + EDGE - r.top : -Infinity,
-        maxY: vertical ? Math.min(sr.bottom, window.innerHeight) - EDGE - r.top : Infinity,
-      };
-    };
-    build();
-    lan.classList.add("is-live");
-
-    // strap text scroll (same pace as the old CSS marquee: 4 repeats per 18 s)
-    let unit = 0;
-    try {
-      unit = measure.getComputedTextLength();
-    } catch {
-      unit = 0;
-    }
-
-    const render = (alpha: number) => {
-      const p = sim.pose(alpha);
-      const pts = p.ribbon.map((q) => ({ x: q.x + HALF_W, y: q.y }));
-      let d = `M${pts[0].x.toFixed(2)} ${(pts[0].y - 40).toFixed(2)}L${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
-      for (let i = 1; i < pts.length - 1; i++) {
-        const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
-        d += `Q${pts[i].x.toFixed(2)} ${pts[i].y.toFixed(2)} ${mx.toFixed(2)} ${my.toFixed(2)}`;
-      }
-      const end = pts[pts.length - 1];
-      d += `L${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
-      ribbonPath.setAttribute("d", d);
-      if (unit > 0) textPath.setAttribute("startOffset", (-((sim.t * unit * 4) / 18) % unit).toFixed(2));
-
-      // coil: fixed number of turns, so it opens up like a spring as it stretches
-      const ax = p.attach.x + HALF_W, ay = p.attach.y;
-      const L = Math.hypot(ax - end.x, ay - end.y) || 1;
-      const ux = (ax - end.x) / L, uy = (ay - end.y) / L;
-      const turns = 14;
-      const amp = 4.2;
-      let c = `M${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
-      for (let i = 1; i < turns * 2; i++) {
-        const t = i / (turns * 2);
-        const side = i % 2 ? amp : -amp;
-        c += `L${(end.x + ux * L * t - uy * side).toFixed(2)} ${(end.y + uy * L * t + ux * side).toFixed(2)}`;
-      }
-      c += `L${ax.toFixed(2)} ${ay.toFixed(2)}`;
-      coil.setAttribute("d", c);
-      reel.setAttribute("transform", `translate(${end.x.toFixed(2)} ${end.y.toFixed(2)})`);
-      badge.style.transform = `translate3d(${(ax - HALF_W).toFixed(2)}px,${ay.toFixed(2)}px,0) rotate(${p.angle.toFixed(4)}rad)`;
-    };
-
-    // fixed-timestep loop
-    let raf = 0;
-    let last = 0;
-    let acc = 0;
-    let visible = false;
-    const frame = (now: number) => {
-      const frameDt = last ? Math.min(0.1, (now - last) / 1000) : PHYS.dt;
-      last = now;
-      acc += frameDt;
-      let n = 0;
-      while (acc >= PHYS.dt && n < PHYS.maxSubsteps) {
-        sim.step();
-        acc -= PHYS.dt;
-        n++;
-      }
-      if (n === PHYS.maxSubsteps) acc = 0;
-      render(acc / PHYS.dt);
-      raf = requestAnimationFrame(frame);
-    };
-    const start = () => {
-      if (!raf && visible) {
-        last = 0;
-        acc = 0;
-        raf = requestAnimationFrame(frame);
-      }
-    };
-    const stop = () => {
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
-    };
-    render(1);
-
-    // drag
-    let dragId: number | null = null;
-    let downX = 0, downY = 0, downT = 0, moved = 0;
-    const onDown = (e: PointerEvent) => {
-      if (dragId !== null || (e.pointerType === "mouse" && e.button !== 0)) return;
-      dragId = e.pointerId;
-      card.setPointerCapture(e.pointerId);
-      downX = e.clientX;
-      downY = e.clientY;
-      downT = performance.now();
-      moved = 0;
-      updateBounds(true);
-      const pt = toSim(e.clientX, e.clientY);
-      const { u, v } = sim.localUV(pt);
-      sim.grab(u, v, pt);
-      lan.classList.add("is-dragging");
-      start();
-    };
-    const clampTarget = (x: number, y: number) => {
-      const b = sim.bounds;
-      return { x: Math.min(b.maxX, Math.max(b.minX, x)), y: Math.min(b.maxY, Math.max(b.minY, y)) };
-    };
-    const onMove = (e: PointerEvent) => {
-      if (e.pointerId !== dragId) return;
-      moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
-      updateBounds(true);
-      const pt = toSim(e.clientX, e.clientY);
-      sim.target = clampTarget(pt.x, pt.y);
-    };
-    const onUp = (e: PointerEvent) => {
-      if (e.pointerId !== dragId) return;
-      dragId = null;
-      sim.release();
-      updateBounds(false);
-      lan.classList.remove("is-dragging");
-      if (card.hasPointerCapture(e.pointerId)) card.releasePointerCapture(e.pointerId);
-      if (e.type === "pointerup" && moved < TAP_PX && performance.now() - downT < TAP_MS) flipRef.current();
-    };
-    const noDrag = (e: Event) => e.preventDefault(); // no native image/text drag
-
-    // pointer movement near the card (not dragging) nudges it, as before
-    let lastX: number | null = null;
-    let lastT = 0;
-    const onSectionMove = (e: PointerEvent) => {
-      if (dragId !== null) return;
-      const now = performance.now();
-      if (lastX !== null && now - lastT < 80) {
-        const dv = Math.max(-14, Math.min(14, (e.clientX - lastX) * 0.22));
-        sim.impulse(dv, 0);
-      }
-      lastX = e.clientX;
-      lastT = now;
-    };
-
-    const onKey = (e: KeyboardEvent) => {
-      const kick: Record<string, [number, number]> = {
-        ArrowLeft: [-260, 0],
-        ArrowRight: [260, 0],
-        ArrowUp: [0, -320],
-        ArrowDown: [0, 420],
-      };
-      const k = kick[e.key];
-      if (!k) return;
-      e.preventDefault();
-      sim.impulse(k[0], k[1]);
-      start();
-    };
-
-    const onResize = () => {
-      const before = strapH;
-      build();
-      if (strapH === before) updateBounds(false);
-      render(1);
-    };
-
-    const io = new IntersectionObserver(([en]) => {
-      visible = en.isIntersecting;
-      if (visible) start();
-      else if (dragId === null) stop();
+    // the physics module is loaded on demand (keeps it out of the first-load JS); the static card shows meanwhile
+    let dispose: (() => void) | undefined;
+    let dead = false;
+    import("@/lib/lanyard-sim").then((lib) => {
+      if (!dead) dispose = mount(lib) ?? undefined;
     });
-    io.observe(lan.parentElement ?? lan);
-
-    card.addEventListener("pointerdown", onDown);
-    card.addEventListener("pointermove", onMove);
-    card.addEventListener("pointerup", onUp);
-    card.addEventListener("pointercancel", onUp);
-    card.addEventListener("lostpointercapture", onUp);
-    card.addEventListener("dragstart", noDrag);
-    card.addEventListener("keydown", onKey);
-    section.addEventListener("pointermove", onSectionMove, { passive: true });
-    window.addEventListener("resize", onResize);
     return () => {
-      stop();
-      io.disconnect();
-      card.removeEventListener("pointerdown", onDown);
-      card.removeEventListener("pointermove", onMove);
-      card.removeEventListener("pointerup", onUp);
-      card.removeEventListener("pointercancel", onUp);
-      card.removeEventListener("lostpointercapture", onUp);
-      card.removeEventListener("dragstart", noDrag);
-      card.removeEventListener("keydown", onKey);
-      section.removeEventListener("pointermove", onSectionMove);
-      window.removeEventListener("resize", onResize);
-      lan.classList.remove("is-live", "is-dragging");
-      badge.style.transform = "";
+      dead = true;
+      dispose?.();
     };
+
+    function mount({ LanyardSim: Sim, PHYS }: typeof import("@/lib/lanyard-sim")): (() => void) | undefined {
+      if (!lan) return;
+      const section = lan.closest("section");
+      const badge = lan.querySelector<HTMLElement>(".badge");
+      const card = lan.querySelector<HTMLElement>(".idcard");
+      const strapProbe = lan.querySelector<HTMLElement>(".strap");
+      const svg = lan.querySelector<SVGSVGElement>(".strap-svg");
+      const ribbonPath = svg?.querySelector<SVGPathElement>(".ribbon");
+      const textPath = svg?.querySelector<SVGTextPathElement>("textPath");
+      const coil = svg?.querySelector<SVGPathElement>(".coil");
+      const reel = svg?.querySelector<SVGGElement>(".reel");
+      const measure = svg?.querySelector<SVGTextElement>(".strap-measure");
+      if (!section || !badge || !card || !strapProbe || !svg || !ribbonPath || !textPath || !coil || !reel || !measure) return;
+
+      const HALF_W = 150; // anchor x in .lanyard coordinates (lanyard is 300 px wide)
+      const CARD_TOP = 32; // clip (26) + gap (6)
+      const COIL_MIN = 16;
+      let sim: LanyardSim;
+      let strapH = 0;
+      const build = () => {
+        const h = strapProbe.offsetHeight;
+        if (h === strapH) return;
+        strapH = h;
+        const mobile = window.innerWidth <= 720;
+        sim = new Sim({
+          ribbonLen: Math.max(24, strapH - 4 - COIL_MIN), // clip top lands where the static layout puts it
+          coilMin: COIL_MIN,
+          coilMax: mobile ? 220 : 300,
+          cardW: card.offsetWidth || 300,
+          cardH: card.offsetHeight || 404,
+          cardTop: CARD_TOP,
+        });
+        updateBounds(false);
+      };
+
+      // bounds, in sim coordinates (anchor = 0,0)
+      const toSim = (clientX: number, clientY: number) => {
+        const r = lan.getBoundingClientRect();
+        return { x: clientX - r.left - HALF_W, y: clientY - r.top };
+      };
+      const updateBounds = (vertical: boolean) => {
+        const r = lan.getBoundingClientRect();
+        const sr = section.getBoundingClientRect();
+        const vw = document.documentElement.clientWidth;
+        sim.bounds = {
+          minX: Math.max(sr.left, 0) + EDGE - r.left - HALF_W,
+          maxX: Math.min(sr.right, vw) - EDGE - r.left - HALF_W,
+          minY: vertical ? Math.max(sr.top, 0) + EDGE - r.top : -Infinity,
+          maxY: vertical ? Math.min(sr.bottom, window.innerHeight) - EDGE - r.top : Infinity,
+        };
+      };
+      build();
+      lan.classList.add("is-live");
+
+      // strap text scroll (same pace as the old CSS marquee: 4 repeats per 18 s)
+      let unit = 0;
+      try {
+        unit = measure.getComputedTextLength();
+      } catch {
+        unit = 0;
+      }
+
+      const render = (alpha: number) => {
+        const p = sim.pose(alpha);
+        const pts = p.ribbon.map((q) => ({ x: q.x + HALF_W, y: q.y }));
+        let d = `M${pts[0].x.toFixed(2)} ${(pts[0].y - 40).toFixed(2)}L${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+        for (let i = 1; i < pts.length - 1; i++) {
+          const mx = (pts[i].x + pts[i + 1].x) / 2, my = (pts[i].y + pts[i + 1].y) / 2;
+          d += `Q${pts[i].x.toFixed(2)} ${pts[i].y.toFixed(2)} ${mx.toFixed(2)} ${my.toFixed(2)}`;
+        }
+        const end = pts[pts.length - 1];
+        d += `L${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
+        ribbonPath.setAttribute("d", d);
+        if (unit > 0) textPath.setAttribute("startOffset", (-((sim.t * unit * 4) / 18) % unit).toFixed(2));
+
+        // coil: fixed number of turns, so it opens up like a spring as it stretches
+        const ax = p.attach.x + HALF_W, ay = p.attach.y;
+        const L = Math.hypot(ax - end.x, ay - end.y) || 1;
+        const ux = (ax - end.x) / L, uy = (ay - end.y) / L;
+        const turns = 14;
+        const amp = 4.2;
+        let c = `M${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
+        for (let i = 1; i < turns * 2; i++) {
+          const t = i / (turns * 2);
+          const side = i % 2 ? amp : -amp;
+          c += `L${(end.x + ux * L * t - uy * side).toFixed(2)} ${(end.y + uy * L * t + ux * side).toFixed(2)}`;
+        }
+        c += `L${ax.toFixed(2)} ${ay.toFixed(2)}`;
+        coil.setAttribute("d", c);
+        reel.setAttribute("transform", `translate(${end.x.toFixed(2)} ${end.y.toFixed(2)})`);
+        badge.style.transform = `translate3d(${(ax - HALF_W).toFixed(2)}px,${ay.toFixed(2)}px,0) rotate(${p.angle.toFixed(4)}rad)`;
+      };
+
+      // fixed-timestep loop
+      let raf = 0;
+      let last = 0;
+      let acc = 0;
+      let visible = false;
+      const frame = (now: number) => {
+        const frameDt = last ? Math.min(0.1, (now - last) / 1000) : PHYS.dt;
+        last = now;
+        acc += frameDt;
+        let n = 0;
+        while (acc >= PHYS.dt && n < PHYS.maxSubsteps) {
+          sim.step();
+          acc -= PHYS.dt;
+          n++;
+        }
+        if (n === PHYS.maxSubsteps) acc = 0;
+        render(acc / PHYS.dt);
+        raf = requestAnimationFrame(frame);
+      };
+      const start = () => {
+        if (!raf && visible) {
+          last = 0;
+          acc = 0;
+          raf = requestAnimationFrame(frame);
+        }
+      };
+      const stop = () => {
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
+      };
+      render(1);
+
+      // drag
+      let dragId: number | null = null;
+      let downX = 0, downY = 0, downT = 0, moved = 0;
+      const onDown = (e: PointerEvent) => {
+        if (dragId !== null || (e.pointerType === "mouse" && e.button !== 0)) return;
+        dragId = e.pointerId;
+        card.setPointerCapture(e.pointerId);
+        downX = e.clientX;
+        downY = e.clientY;
+        downT = performance.now();
+        moved = 0;
+        updateBounds(true);
+        const pt = toSim(e.clientX, e.clientY);
+        const { u, v } = sim.localUV(pt);
+        sim.grab(u, v, pt);
+        lan.classList.add("is-dragging");
+        start();
+      };
+      const clampTarget = (x: number, y: number) => {
+        const b = sim.bounds;
+        return { x: Math.min(b.maxX, Math.max(b.minX, x)), y: Math.min(b.maxY, Math.max(b.minY, y)) };
+      };
+      const onMove = (e: PointerEvent) => {
+        if (e.pointerId !== dragId) return;
+        moved = Math.max(moved, Math.hypot(e.clientX - downX, e.clientY - downY));
+        updateBounds(true);
+        const pt = toSim(e.clientX, e.clientY);
+        sim.target = clampTarget(pt.x, pt.y);
+      };
+      const onUp = (e: PointerEvent) => {
+        if (e.pointerId !== dragId) return;
+        dragId = null;
+        sim.release();
+        updateBounds(false);
+        lan.classList.remove("is-dragging");
+        if (card.hasPointerCapture(e.pointerId)) card.releasePointerCapture(e.pointerId);
+        if (e.type === "pointerup" && moved < TAP_PX && performance.now() - downT < TAP_MS) flipRef.current();
+      };
+      const noDrag = (e: Event) => e.preventDefault(); // no native image/text drag
+
+      // pointer movement near the card (not dragging) nudges it, as before
+      let lastX: number | null = null;
+      let lastT = 0;
+      const onSectionMove = (e: PointerEvent) => {
+        if (dragId !== null) return;
+        const now = performance.now();
+        if (lastX !== null && now - lastT < 80) {
+          const dv = Math.max(-14, Math.min(14, (e.clientX - lastX) * 0.22));
+          sim.impulse(dv, 0);
+        }
+        lastX = e.clientX;
+        lastT = now;
+      };
+
+      const onKey = (e: KeyboardEvent) => {
+        const kick: Record<string, [number, number]> = {
+          ArrowLeft: [-260, 0],
+          ArrowRight: [260, 0],
+          ArrowUp: [0, -320],
+          ArrowDown: [0, 420],
+        };
+        const k = kick[e.key];
+        if (!k) return;
+        e.preventDefault();
+        sim.impulse(k[0], k[1]);
+        start();
+      };
+
+      const onResize = () => {
+        const before = strapH;
+        build();
+        if (strapH === before) updateBounds(false);
+        render(1);
+      };
+
+      const io = new IntersectionObserver(([en]) => {
+        visible = en.isIntersecting;
+        if (visible) start();
+        else if (dragId === null) stop();
+      });
+      io.observe(lan.parentElement ?? lan);
+
+      card.addEventListener("pointerdown", onDown);
+      card.addEventListener("pointermove", onMove);
+      card.addEventListener("pointerup", onUp);
+      card.addEventListener("pointercancel", onUp);
+      card.addEventListener("lostpointercapture", onUp);
+      card.addEventListener("dragstart", noDrag);
+      card.addEventListener("keydown", onKey);
+      section.addEventListener("pointermove", onSectionMove, { passive: true });
+      window.addEventListener("resize", onResize);
+      return () => {
+        stop();
+        io.disconnect();
+        card.removeEventListener("pointerdown", onDown);
+        card.removeEventListener("pointermove", onMove);
+        card.removeEventListener("pointerup", onUp);
+        card.removeEventListener("pointercancel", onUp);
+        card.removeEventListener("lostpointercapture", onUp);
+        card.removeEventListener("dragstart", noDrag);
+        card.removeEventListener("keydown", onKey);
+        section.removeEventListener("pointermove", onSectionMove);
+        window.removeEventListener("resize", onResize);
+        lan.classList.remove("is-live", "is-dragging");
+        badge.style.transform = "";
+      };
+    }
   }, [lanyardRef, enabled]);
 }
 

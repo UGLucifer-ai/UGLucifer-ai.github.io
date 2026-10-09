@@ -24,152 +24,124 @@ type KB = typeof import("@/lib/askme");
 let kbPromise: Promise<KB> | null = null;
 const loadKB = () => (kbPromise ??= import("@/lib/askme"));
 
-const PREFERRED = ["male", "guy", "david", "mark", "daniel", "alex", "google us english"];
-function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
-  const us = voices.filter((v) => /^en[-_]US/i.test(v.lang));
-  for (const p of PREFERRED) {
-    const v = us.find((x) => x.name.toLowerCase().includes(p));
-    if (v) return v;
-  }
-  return us[0] ?? voices.find((v) => /^en/i.test(v.lang)) ?? null;
-}
-
-export type AskMeVoice = {
-  /** Shared hero sound state (intro video + spoken answers). */
-  soundOn: boolean;
-  /** True if an answer may be spoken right now (sound on, or being unlocked by this very click). */
-  canSpeak: () => boolean;
-  toggleSound: () => void;
-  /** Called when speech starts/stops so the hero can pause/resume the intro video. */
-  onSpeaking: (speaking: boolean) => void;
+export type ClipCallbacks = {
+  /** the clip is on screen; `progress()` → 0…1 of its playback, for pacing the caption */
+  onStart: (progress: () => number, duration: number) => void;
+  onEnd: () => void;
+  /** the clip couldn't be loaded → answer text-only */
+  onFail: () => void;
 };
 
-export default function AskMe({ voice }: { voice: AskMeVoice }) {
+export type AskMeHero = {
+  /** true if this chip has a lip-synced answer clip in the manifest (data.ts → ANSWER_CLIP_IDS) */
+  hasClip: (id: string) => boolean;
+  /** play the chip's answer clip over the intro loop; false = no clip (text-only) */
+  playAnswer: (id: string, cb: ClipCallbacks) => boolean;
+  /** stop any answer clip and return to the intro loop */
+  stopAnswer: () => void;
+};
+
+/** "type" = typing reveal; "wait" = clip loading; "clip" = caption follows the clip; "full" = all shown */
+type Mode = "type" | "wait" | "clip" | "full";
+const CLIP_WAIT_MS = 2500; // a slow clip shouldn't hold the caption back
+const LEAD = 0.2; // seconds of silence kept before/after speech in each clip (build-hero-assets.py --answer)
+
+export default function AskMe({ hero }: { hero: AskMeHero }) {
   const reduced = useReducedMotion();
   const uid = useId();
   const [open, setOpen] = useState(false); // mobile pill
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<Answer | null>(null);
   const [shown, setShown] = useState(GREETING.length);
+  const [mode, setMode] = useState<Mode>("full");
   const [input, setInput] = useState("");
-  const voiceRef = useRef(voice);
-  voiceRef.current = voice;
+  const heroRef = useRef(hero);
+  heroRef.current = hero;
   const tokenRef = useRef(0);
-  const voicesRef = useRef<SpeechSynthesisVoice | null>(null);
-  const bubbleRef = useRef<HTMLDivElement>(null);
+  const shownRef = useRef(0);
+  const progressRef = useRef<{ get: () => number; d: number } | null>(null);
   const text = answer?.text ?? GREETING;
   const done = shown >= text.length;
 
-  // voices load asynchronously in most browsers
-  useEffect(() => {
-    const ss = typeof window !== "undefined" ? window.speechSynthesis : undefined;
-    if (!ss) return;
-    const update = () => {
-      voicesRef.current = pickVoice(ss.getVoices());
-    };
-    update();
-    ss.addEventListener?.("voiceschanged", update);
-    return () => ss.removeEventListener?.("voiceschanged", update);
+  const reveal = (n: number) => {
+    shownRef.current = n;
+    setShown(n);
+  };
+
+  const respond = useCallback(async (q: string, id?: string) => {
+    const token = ++tokenRef.current;
+    progressRef.current = null;
+    let m: Mode = "type";
+    let loaded = false;
+    if (id) {
+      // start the clip synchronously, inside the click (user gesture → sound allowed)
+      const ok = heroRef.current.playAnswer(id, {
+        onStart: (get, d) => {
+          if (token !== tokenRef.current) return;
+          progressRef.current = { get, d };
+          m = "clip";
+          if (loaded) setMode("clip");
+        },
+        onEnd: () => {
+          if (token !== tokenRef.current) return;
+          m = "full";
+          if (loaded) setMode("full");
+        },
+        onFail: () => {
+          if (token !== tokenRef.current) return;
+          m = "type";
+          if (loaded) setMode("type");
+        },
+      });
+      if (ok && m === "type") m = "wait";
+    } else heroRef.current.stopAnswer(); // typed question: text only, the intro loop keeps playing
+    const kb = await loadKB();
+    if (token !== tokenRef.current) return;
+    const a = id ? kb.answerFor(id) : kb.ask(q).answer;
+    setQuestion(q);
+    setAnswer(a);
+    reveal(0);
+    loaded = true;
+    setMode(m); // the clip may already be playing, finished or failed by now
+    if (a.download) {
+      const link = document.createElement("a");
+      link.href = a.links?.find((l) => l.download)?.href ?? "";
+      link.download = "";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
   }, []);
 
-  const stopSpeech = useCallback(() => {
-    tokenRef.current++;
-    const ss = window.speechSynthesis;
-    if (ss && (ss.speaking || ss.pending)) ss.cancel();
-    voiceRef.current.onSpeaking(false);
-  }, []);
-
-  // sound switched off (either toggle) → stop talking
-  useEffect(() => {
-    if (!voice.soundOn) stopSpeech();
-  }, [voice.soundOn, stopSpeech]);
-
-  // stop when the hero/panel scrolls out of view or the tab is hidden
-  useEffect(() => {
-    const el = bubbleRef.current?.closest("section");
-    if (!el) return;
-    const io = new IntersectionObserver(([e]) => {
-      if (e.intersectionRatio < 0.35) stopSpeech();
-    }, { threshold: [0, 0.35] });
-    io.observe(el);
-    const vis = () => document.hidden && stopSpeech();
-    document.addEventListener("visibilitychange", vis);
-    return () => {
-      io.disconnect();
-      document.removeEventListener("visibilitychange", vis);
-      stopSpeech();
-    };
-  }, [stopSpeech]);
-
-  const speak = useCallback(
-    (t: string, kb: KB) => {
-      const ss = window.speechSynthesis;
-      if (!ss || typeof SpeechSynthesisUtterance === "undefined") return;
-      const token = ++tokenRef.current;
-      if (ss.speaking || ss.pending) ss.cancel();
-      const u = new SpeechSynthesisUtterance(kb.speakable(t));
-      const v = voicesRef.current ?? pickVoice(ss.getVoices());
-      if (v) u.voice = v;
-      u.lang = v?.lang ?? "en-US";
-      u.rate = 1.02;
-      u.pitch = 0.95;
-      let started = false;
-      u.onstart = () => {
-        started = true;
-        if (token === tokenRef.current) voiceRef.current.onSpeaking(true);
-      };
-      const end = () => {
-        if (token === tokenRef.current) voiceRef.current.onSpeaking(false);
-      };
-      u.onend = end;
-      u.onerror = end;
-      voiceRef.current.onSpeaking(true); // mute the intro voice right away
-      ss.speak(u);
-      setTimeout(() => {
-        if (!started && token === tokenRef.current && !ss.speaking) voiceRef.current.onSpeaking(false);
-      }, 2500);
-    },
-    [],
-  );
-
-  const respond = useCallback(
-    async (q: string, id?: string) => {
-      const kb = await loadKB();
-      const a = id ? kb.answerFor(id) : kb.ask(q).answer;
-      setQuestion(q);
-      setAnswer(a);
-      setShown(0);
-      if (a.download) {
-        const link = document.createElement("a");
-        link.href = a.links?.find((l) => l.download)?.href ?? "";
-        link.download = "";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-      }
-      if (voiceRef.current.canSpeak()) speak(a.text, kb);
-      else stopSpeech();
-    },
-    [speak, stopSpeech],
-  );
-
-  // typing reveal (instant with reduced motion)
+  // caption reveal: typed (70 chars/s), paced by the answer clip, or instant with reduced motion
   useEffect(() => {
     if (!answer) return;
-    if (reduced) {
-      setShown(answer.text.length);
+    const len = answer.text.length;
+    if (reduced || mode === "full") {
+      reveal(len);
       return;
     }
+    if (mode === "wait") {
+      const t = setTimeout(() => setMode((cur) => (cur === "wait" ? "type" : cur)), CLIP_WAIT_MS);
+      return () => clearTimeout(t);
+    }
     let raf = 0;
+    const from = shownRef.current;
     const t0 = performance.now();
     const tick = (now: number) => {
-      const n = Math.min(answer.text.length, Math.floor(((now - t0) / 1000) * 70));
-      setShown(n);
-      if (n < answer.text.length) raf = requestAnimationFrame(tick);
+      let n: number;
+      if (mode === "clip" && progressRef.current) {
+        const { get, d } = progressRef.current;
+        const speech = Math.max(0.5, d - 2 * LEAD);
+        const p = Math.min(1, Math.max(0, (get() * d - LEAD) / speech) * 1.06); // a hair ahead of the voice
+        n = Math.max(shownRef.current, Math.ceil(len * p));
+      } else n = Math.min(len, from + Math.floor(((now - t0) / 1000) * 70));
+      if (n !== shownRef.current) reveal(n);
+      if (n < len) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [answer, reduced]);
+  }, [answer, reduced, mode]);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -206,7 +178,7 @@ export default function AskMe({ voice }: { voice: AskMeVoice }) {
         </svg>
       </button>
       <div id={bodyId} className="askme-body">
-        <div ref={bubbleRef} className="askme-bubble">
+        <div className="askme-bubble">
           <div className="askme-scroll">
           <p className="askme-q mono">{answer ? question : "Ask me"}</p>
           <p className="askme-a" aria-hidden="true">
@@ -231,28 +203,11 @@ export default function AskMe({ voice }: { voice: AskMeVoice }) {
           <p id={titleId} className="askme-title mono">
             Ask me · from my résumé
           </p>
-          <button
-            type="button"
-            className="askme-voice"
-            onClick={voice.toggleSound}
-            aria-pressed={voice.soundOn}
-            aria-label={voice.soundOn ? "Voice on: mute spoken answers and intro sound" : "Voice off: unmute spoken answers and intro sound"}
-          >
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-              <path d="M2 6h3l4-3v10l-4-3H2z" fill="currentColor" />
-              {voice.soundOn ? (
-                <path d="M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.6a6 6 0 0 1 0 8.8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-              ) : (
-                <path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-              )}
-            </svg>
-            <span>{voice.soundOn ? "Voice on" : "Voice off"}</span>
-          </button>
         </div>
         <ul className="askme-chips">
           {CHIPS.map((c) => (
             <li key={c.id}>
-              <button type="button" className="askme-chip" onClick={() => respond(c.q, c.id)}>
+              <button type="button" className="askme-chip" data-clip={hero.hasClip(c.id) ? "" : undefined} onClick={() => respond(c.q, c.id)}>
                 {c.q}
               </button>
             </li>
@@ -299,9 +254,6 @@ export default function AskMe({ voice }: { voice: AskMeVoice }) {
         .askme-link:hover{background:var(--ink-2)}
         .askme-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
         .askme-title{margin:0;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
-        .askme-voice{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 10px;border-radius:999px;box-shadow:inset 0 0 0 1px var(--line);background:var(--card);color:var(--ink)}
-        .askme-voice[aria-pressed="false"]{color:var(--mute)}
-        .askme-voice:hover{box-shadow:inset 0 0 0 1px var(--ink)}
         .askme-chips{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
         .askme-chip{font-size:12.5px;line-height:1.2;padding:7px 11px;border-radius:999px;background:rgba(255,255,255,.72);box-shadow:inset 0 0 0 1px var(--line);color:var(--ink);text-align:left;transition:background .3s var(--ease),color .3s var(--ease)}
         .askme-chip:hover,.askme-chip:focus-visible{background:var(--ink);color:#fff}

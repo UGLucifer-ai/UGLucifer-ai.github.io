@@ -55,6 +55,8 @@ python3 scripts/build-hero-assets.py inputs/intro.mp4 --crop 800:1000:560:80 --d
 python3 scripts/build-hero-assets.py --poster-only
 # just the ID-card portrait from a photo (hero video and og.jpg untouched)
 python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
+# an "Ask me" answer clip (see clips/ANSWER-CLIPS.md)
+python3 scripts/build-hero-assets.py --answer who inputs/answers/who.mp4
 ```
 
 What it does:
@@ -90,10 +92,19 @@ Live: **https://uglucifer-ai.github.io/** (repo `UGLucifer-ai/UGLucifer-ai.githu
 
 ## Lanyard physics (About ID card)
 
-`src/lib/lanyard-sim.ts` is a dependency-free Verlet simulation run by `useLanyard` in `About.tsx` (fixed 1/120 s step with an accumulator, 12 constraint iterations, rendering interpolated between steps): anchor → fabric strap (6-link rope) → badge reel → coil cord (preloaded spring, 16–300 px; 220 px on mobile) → clip → card (rigid body, 4 corners + 6 sticks). Grab and pull with mouse or touch (pointer capture; `touch-action:none` only on the card); release and it snaps back and swings until it settles. A tap (< 6 px, < 250 ms) flips the card, a drag never does; Enter/Space flip, arrow keys swing it. The card is kept inside the section and viewport while dragging and never overflows horizontally. With `prefers-reduced-motion` it is a static card that only flips. Tune the constants in `PHYS`.
+`src/lib/lanyard-sim.ts` is a dependency-free Verlet simulation run by `useLanyard` in `About.tsx`, loaded on demand with `import()` so it isn't in the first-load JS (the static card shows until it's ready) (fixed 1/120 s step with an accumulator, 12 constraint iterations, rendering interpolated between steps): anchor → fabric strap (6-link rope) → badge reel → coil cord (preloaded spring, 16–300 px; 220 px on mobile) → clip → card (rigid body, 4 corners + 6 sticks). Grab and pull with mouse or touch (pointer capture; `touch-action:none` only on the card); release and it snaps back and swings until it settles. A tap (< 6 px, < 250 ms) flips the card, a drag never does; Enter/Space flip, arrow keys swing it. The card is kept inside the section and viewport while dragging and never overflows horizontally. With `prefers-reduced-motion` it is a static card that only flips. Tune the constants in `PHYS`.
 
 ## "Ask me" (hero Q&A)
 
 `src/components/hero/AskMe.tsx` + `src/lib/askme.ts`. A static, client-side Q&A beside the hero character (below it, behind an "Ask me" pill, under 960 px). Answers come **only** from the résumé and `src/lib/data.ts`, in first person; the knowledge base is lazy-loaded (`import()`) on first hover/focus/question, so it isn't in the first-load JS. Matching is a tiny hand-rolled scorer: normalised keywords and phrases with synonyms, plus light fuzzy matching (Damerau-Levenshtein ≤ 1–2, prefixes); a tool from the résumé's skills/experience gets a specific "yes, under …, used at …" answer, a known tool that is *not* on the résumé gets "that's not on my résumé, but ask me directly", and salary/availability/visa questions are always deferred to a direct conversation. Unknown questions get a polite fallback to Contact and LinkedIn.
 
-Answers are typed into a speech bubble (instant with reduced motion; full text in an `aria-live` region) and read aloud with `speechSynthesis` (prefers a male en-US voice). Sound is one shared state with the hero video's sound button: when it's off, answers aren't spoken; while speaking, the intro video pauses and resumes afterwards; speech stops when the hero scrolls out of view. Tool → employer facts (`WHERE`) were generated from `inputs/resume.pdf`; regenerate them if the résumé changes.
+Answers appear in a speech bubble (typed, or instant with reduced motion; full text in an `aria-live` region). There is no browser text-to-speech: typed questions get a text-only bubble and the intro video keeps playing. Tool → employer facts (`WHERE`) were generated from `inputs/resume.pdf`; regenerate them if the résumé changes.
+
+### Answer clips (the character answers the chips himself)
+
+Each suggested chip can have a pre-generated, lip-synced Google Flow clip, made like the intro. Scripts and full Flow prompts: **`clips/ANSWER-CLIPS.md`**; the captions are `CHIP_SCRIPTS` in `src/lib/askme.ts` (word for word the same).
+
+- **Manifest:** `ANSWER_CLIP_IDS` in `src/lib/data.ts`. A listed chip plays `public/hero/answers/<id>.webm` (or `.mp4`, poster `<id>-poster.webp`); anything else, or a clip that fails to load, falls back to a text-only answer. Add clips one at a time.
+- **Playback:** a second `<video>` stacked over the intro loop (same box, same `object-fit`, blend and mask) crossfades in (0.28 s, instant with reduced motion) once the clip is actually playing, so there's no flash; the loop pauses underneath. The chip click is the user gesture, so the clip plays **with sound** unless the visitor explicitly muted with the hero sound button (then it plays muted with captions). The caption is revealed in step with the clip's playback. Another chip mid-answer switches clips; a typed question stops the clip. Scrolling the hero out of view pauses the clip (like the loop) and it resumes when you come back. The hero sound button mutes/unmutes whichever is playing.
+- **After a clip:** it crossfades back to the intro loop **from its first frame, muted** (the clips start and end in the same relaxed pose as the loop's first frame, and the intro shouldn't immediately start talking again). The sound button then shows ▶ and turns the intro's sound back on.
+- **Build:** `python3 scripts/build-hero-assets.py --answer <id> inputs/answers/<id>.mp4` crops, pads and whitens exactly like the hero loop, using the box and levels saved in `scripts/hero-framing.json` (written by every full run; recomputed from `inputs/intro.mp4` if missing), so the character doesn't jump between the loop and an answer. It trims leading/trailing silence to 0.2 s (`--lead`), applies no loop or cross-fade, and writes webm + mp4 + poster to `public/hero/answers/`. The clip must have the intro's aspect ratio (9:16).

@@ -8,6 +8,13 @@ Outputs (default --out public/):
   public/hero/hero-poster.webp  frame 0 of hero.mp4 (the <video poster>), WebP q90
   public/portrait-bust.webp   480×600 head-to-shirt crop (from --photo, else clearest frame)
   public/og.jpg               1200×630 social card
+  scripts/hero-framing.json   the crop box + whiten levels used for the loop (reused by --answer)
+
+Answer clips (--answer <id>): one lip-synced Google Flow clip per "Ask me" chip →
+  public/hero/answers/<id>.mp4 / <id>.webm / <id>-poster.webp
+  Same crop box, white padding/feather and whiten levels as the hero loop (so the character
+  doesn't jump when the clips swap), leading/trailing silence trimmed to --lead (0.2 s),
+  no loop and no cross-fade. Then add <id> to ANSWER_CLIP_IDS in src/lib/data.ts.
 
 Pipeline
   1. Crop tightly around the person (auto-detected against the light backdrop,
@@ -27,11 +34,14 @@ Examples
   python3 scripts/build-hero-assets.py inputs/intro.mp4 --photo inputs/photo.jpg --photo-crop 2092:2615:490:572
   python3 scripts/build-hero-assets.py --poster-only
   python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
+  python3 scripts/build-hero-assets.py --answer who inputs/answers/who.mp4
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +51,8 @@ from pathlib import Path
 
 import numpy as np
 
+FRAMING = Path(__file__).with_name("hero-framing.json")
+ANSWER_IDS = ("who", "whatdo", "current", "kubernetes", "aws", "cicd", "tools", "contact", "resume")
 OUT_W, OUT_H = 768, 960  # 4:5 hero frame (matches aspect-ratio: 768/960 in CSS)
 WHITEN = "colorlevels=rimax=0.98:gimax=0.98:bimax=0.98"
 SR = 48000
@@ -365,6 +377,155 @@ def make_og(still_src: list[str], out: Path, vf_chain: str) -> None:
            "-q:v", "3", str(out))
 
 
+# ───────────────────────────── answer clips ─────────────────────────────
+
+def loop_window(meta: dict, start: float, duration: float | None) -> float:
+    """The window length D the loop is cut from (same rule as the full run, snapped down to whole frames)."""
+    dur_default = meta["duration"] - start if meta["duration"] - start <= 15 else 10.0
+    D = min(duration or dur_default, max(0.0, meta["duration"] - start))
+    return int(D * meta["fps"] + 1e-6) / meta["fps"]
+
+
+def save_framing(src: Path, meta: dict, box: "Box", lv: tuple[float, float, float], feather: int) -> None:
+    FRAMING.write_text(json.dumps({
+        "source": src.name, "src_w": meta["w"], "src_h": meta["h"],
+        "box": [box.w, box.h, box.x, box.y], "levels": [round(c, 4) for c in lv], "feather": feather,
+    }, indent=2) + "\n")
+    print(f"• framing saved → {FRAMING}")
+
+
+def hero_framing(ref: Path, args) -> dict:
+    """The loop's crop box + whiten levels: scripts/hero-framing.json (written by every full run), or
+    recomputed from the intro video exactly as the full run does it (and saved)."""
+    if FRAMING.exists():
+        return json.loads(FRAMING.read_text())
+    if not ref.exists():
+        sys.exit(f"✗ {FRAMING.name} missing and reference intro {ref} not found — pass --ref or run the full pipeline")
+    print(f"• {FRAMING.name} not found — recomputing the hero framing from {ref}")
+    meta = probe(ref)
+    D = loop_window(meta, args.start, args.duration)
+    if args.crop:
+        box = Box(*(int(v) for v in args.crop.split(":")), meta["w"], meta["h"])
+    else:
+        box, _ = detect_crop(ref, meta, args.start, D, args.margin)
+    bl = backdrop_levels(ref, args.start + D / 2, meta)
+    lv = (args.whiten_max,) * 3 if args.whiten_max else tuple(min(0.98, max(0.80, c - 0.01)) for c in bl)
+    save_framing(ref, meta, box, lv, args.feather)
+    return json.loads(FRAMING.read_text())
+
+
+def build_answer(clip: Path, aid: str, out: Path, args) -> None:
+    """Lip-synced answer clip → public/hero/answers/<aid>.{mp4,webm} + <aid>-poster.webp, framed like the loop."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", aid):
+        sys.exit("✗ --answer id must be lowercase letters, digits or dashes (e.g. who, kubernetes)")
+    if aid not in ANSWER_IDS:
+        print(f"  ! '{aid}' is not one of the chip ids {', '.join(ANSWER_IDS)}")
+    if not clip.exists():
+        sys.exit(f"✗ answer clip {clip} not found")
+    fr = hero_framing(args.ref, args)
+    meta = probe(clip)
+    print(f"• answer '{aid}': {clip} {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s, audio={meta['audio']}")
+
+    # ── same crop box as the loop (scaled if Flow rendered the same framing at another resolution)
+    bw, bh, bx, by = fr["box"]
+    if (meta["w"], meta["h"]) == (fr["src_w"], fr["src_h"]):
+        box = Box(bw, bh, bx, by, meta["w"], meta["h"])
+    elif abs(meta["w"] / meta["h"] - fr["src_w"] / fr["src_h"]) < 0.01:
+        k = meta["w"] / fr["src_w"]
+        box = Box(even(bw * k), even(bh * k), even(bx * k), even(by * k), meta["w"], meta["h"])
+        print(f"  ! resolution differs from the intro ({fr['src_w']}×{fr['src_h']}) — hero box scaled ×{k:.3f}")
+    else:
+        sys.exit(f"✗ clip aspect {meta['w']}×{meta['h']} ≠ intro {fr['src_w']}×{fr['src_h']}: generate the clip in the "
+                 "same aspect ratio as the intro (the framing would not match)")
+    lv = (args.whiten_max,) * 3 if args.whiten_max else tuple(fr["levels"])
+    whiten = f"colorlevels=rimax={lv[0]:.3f}:gimax={lv[1]:.3f}:bimax={lv[2]:.3f}"
+    bl = backdrop_levels(clip, meta["duration"] / 2, meta)
+    print(f"• crop {box} (hero box), whiten max {tuple(round(c, 3) for c in lv)} (hero levels); "
+          f"clip backdrop RGB ≈ {tuple(round(c * 255) for c in bl)}")
+    if min(bl[i] - lv[i] for i in range(3)) < -0.004:
+        print("  ! this clip's backdrop is darker than the intro's — it may not whiten fully; try --whiten-max")
+
+    # ── trim leading/trailing silence to --lead seconds (whole frames, picture and sound cut together)
+    fps = meta["fps"]
+    last = math.floor(meta["duration"] * fps + 1e-6) / fps
+    t0, t1 = 0.0, last
+    audio = read_audio(clip, 0, meta["duration"] + 1) if meta["audio"] else None
+    if audio is not None:
+        sb = speech_bounds(audio)
+        if sb:
+            on, off = sb
+            t0 = max(0.0, math.floor((on - args.lead) * fps) / fps)
+            t1 = min(last, math.ceil((off + args.lead) * fps) / fps)
+            print(f"• speech {on:.3f}s → {off:.3f}s; keeping {t0:.3f}s → {t1:.3f}s ({on - t0:.2f}s lead-in, {t1 - off:.2f}s tail)")
+        else:
+            print("  ! no speech found — keeping the whole clip")
+    else:
+        print("  ! clip has no audio — keeping the whole clip, silent track")
+    N = max(1, int(round((t1 - t0) * fps)))
+    length = N / fps
+
+    tmp = Path(tempfile.mkdtemp(prefix=f"answer-{aid}-"))
+    try:
+        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1"
+        veil = tmp / "veil.rgba"
+        has_veil = write_edge_veil(veil, box, meta["w"], int(fr.get("feather", args.feather)))
+        veil_in = ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{OUT_W}x{OUT_H}", "-i", str(veil)] if has_veil else []
+        still_fc = (f"[0:v]{still_chain}[s0];[s0][1:v]overlay=eof_action=repeat:format=auto,format=yuv420p[still]"
+                    if has_veil else f"[0:v]{still_chain},format=yuv420p[still]")
+        fc = f"{still_fc};[still]fps={meta['fps_str']}[v]"  # fps last (ffmpeg 7.1 colorlevels/pad bug)
+        video_tmp = tmp / "answer.mkv"
+        print(f"• picture: crop/pad/whiten like the hero, {N} frames ({length:.3f}s), no loop/cross-fade")
+        ffmpeg("-ss", f"{t0}", "-i", str(clip), *veil_in, "-filter_complex", fc, "-map", "[v]",
+               "-frames:v", str(N), "-an", "-c:v", "ffv1", str(video_tmp))
+
+        # integrity check: a middle frame must match the same source frame rendered directly
+        k = N // 2
+        def _gray(a: list[str]) -> np.ndarray:
+            raw = ffmpeg(*a, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-", capture=True)
+            return np.frombuffer(raw, np.uint8).astype(np.int16)
+        ref = _gray(["-ss", f"{t0 + k / fps}", "-i", str(clip), *veil_in, "-filter_complex", still_fc, "-map", "[still]"])
+        got = _gray(["-i", str(video_tmp), "-vf", f"select=eq(n\\,{k})"])
+        diff = float(np.abs(ref - got).mean()) if ref.size == got.size else 999.0
+        print(f"• integrity check (frame {k}): mean |Δ| = {diff:.2f}")
+        if diff > 6:
+            sys.exit("✗ answer frames don't match the source render — ffmpeg filter issue; aborting")
+
+        # sound: the same window, sample-accurate, with 10 ms edge ramps (no clicks at the cut)
+        n = int(round(length * SR))
+        s0 = int(round(t0 * SR))
+        a = audio[s0:s0 + n].copy() if audio is not None else np.zeros((0, 2), np.float32)
+        if a.shape[0] < n:
+            a = np.vstack([a, np.zeros((n - a.shape[0], 2), np.float32)])
+        r = min(n // 2, int(0.01 * SR))
+        if r:
+            ramp = np.linspace(0.0, 1.0, r, dtype=np.float32)[:, None]
+            a[:r] *= ramp
+            a[-r:] *= ramp[::-1]
+        audio_tmp = tmp / "answer.wav"
+        write_wav(audio_tmp, np.clip(a, -1.0, 1.0))
+
+        dst = out / "hero" / "answers"
+        dst.mkdir(parents=True, exist_ok=True)
+        mp4, webm, poster = dst / f"{aid}.mp4", dst / f"{aid}.webm", dst / f"{aid}-poster.webp"
+        print(f"• encoding {mp4.name} (H.264 CRF 24 slow, AAC 96k, faststart)")
+        ffmpeg("-i", str(video_tmp), "-i", str(audio_tmp), "-map", "0:v", "-map", "1:a",
+               "-c:v", "libx264", "-crf", "24", "-preset", "slow", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-shortest", str(mp4))
+        print(f"• encoding {webm.name} (VP9 CRF 36, Opus 80k)")
+        ffmpeg("-i", str(video_tmp), "-i", str(audio_tmp), "-map", "0:v", "-map", "1:a",
+               "-c:v", "libvpx-vp9", "-crf", "36", "-b:v", "0", "-row-mt", "1", "-deadline", "good",
+               "-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", "80k", "-shortest", str(webm))
+        make_poster(mp4, poster)
+        for f in (mp4, webm, poster):
+            print(f"✓ {f}  ({f.stat().st_size / 1024:.0f} KB)")
+        print(f'\nNext: add "{aid}" to ANSWER_CLIP_IDS in src/lib/data.ts')
+    finally:
+        if args.keep_tmp:
+            print(f"(kept {tmp})")
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 def main() -> None:
@@ -387,6 +548,12 @@ def main() -> None:
     ap.add_argument("--portrait-only", action="store_true", help="only build portrait-bust.webp from --photo (hero video and og.jpg untouched)")
     ap.add_argument("--poster-only", action="store_true",
                     help="only (re)build hero/hero-poster.webp from the existing hero/hero.mp4")
+    ap.add_argument("--answer", metavar="ID",
+                    help="build an 'Ask me' answer clip from INPUT → public/hero/answers/ID.{mp4,webm} + ID-poster.webp "
+                         f"(chip ids: {', '.join(ANSWER_IDS)})")
+    ap.add_argument("--lead", type=float, default=0.2, help="--answer: silence kept before/after speech, seconds (default 0.2)")
+    ap.add_argument("--ref", type=Path, default=Path("inputs/intro.mp4"),
+                    help="--answer: intro video to recompute the hero framing from if scripts/hero-framing.json is missing")
     ap.add_argument("--keep-tmp", action="store_true")
     args = ap.parse_args()
 
@@ -405,6 +572,12 @@ def main() -> None:
         print(f"✓ {out / 'hero' / 'hero-poster.webp'}")
         return
 
+    if args.answer:
+        if not args.input:
+            sys.exit("✗ --answer needs the clip path, e.g. --answer who inputs/answers/who.mp4")
+        build_answer(args.input, args.answer, out, args)
+        return
+
     if args.portrait_only:
         if not args.photo:
             sys.exit("✗ --portrait-only needs --photo")
@@ -419,14 +592,12 @@ def main() -> None:
     meta = probe(src)
     print(f"• source {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s, audio={meta['audio']}")
 
-    dur_default = meta["duration"] - args.start if meta["duration"] - args.start <= 15 else 10.0
-    D = min(args.duration or dur_default, max(0.0, meta["duration"] - args.start))
+    # snap D (down) and F to whole frames so picture and sound have identical length
+    D = loop_window(meta, args.start, args.duration)
     F = args.fade
     if D < 4 * F:
         sys.exit(f"✗ usable clip ({D:.2f}s) is too short for a {F}s cross-fade")
-    # snap D (down) and F to whole frames so picture and sound have identical length
     fps = meta["fps"]
-    D = int(D * fps + 1e-6) / fps
     F = round(F * fps) / fps
 
     # ── speech-aware loop point: the cross-fade windows [0,F] and [D−F,D] must be silence
@@ -464,6 +635,7 @@ def main() -> None:
         lv = tuple(min(0.98, max(0.80, c - 0.01)) for c in bl)
         print(f"• backdrop RGB ≈ {tuple(round(c * 255) for c in bl)} → colorlevels max {tuple(round(c, 3) for c in lv)}")
     whiten = f"colorlevels=rimax={lv[0]:.3f}:gimax={lv[1]:.3f}:bimax={lv[2]:.3f}"
+    save_framing(src, meta, box, lv, args.feather)  # answer clips reuse exactly this box + levels
 
     tmp = Path(tempfile.mkdtemp(prefix="hero-"))
     try:

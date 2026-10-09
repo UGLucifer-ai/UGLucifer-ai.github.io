@@ -324,19 +324,28 @@ function toAnswer(it: Intent): Answer {
   return { id: it.id, text: it.text, links: it.links, download: it.download };
 }
 
+/**
+ * What the character says in each chip's lip-synced answer clip (public/hero/answers/<id>.*), word for word —
+ * the bubble shows exactly this text as the caption. Keep in sync with clips/ANSWER-CLIPS.md.
+ * Each is ~15–22 words (6–8 s spoken) and uses only résumé facts.
+ */
+export const CHIP_SCRIPTS: Record<string, string> = {
+  who: "Hi, I'm Uday Charan, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP.",
+  whatdo: "I design and automate cloud and Kubernetes platforms: infrastructure as code with Terraform, CI/CD pipelines, and GitOps deployments.",
+  current: "Since May 2025, I've been a Senior DevOps Engineer at JPMC, building secure AWS and Azure infrastructure for banking.",
+  kubernetes: "I've run Kubernetes on EKS, AKS and OpenShift, handling upgrades, autoscaling and troubleshooting, and deploying with Helm and Argo CD.",
+  aws: "I'm hands-on with AWS: EC2, EKS, VPC and IAM. At JPMC I build secure infrastructure for banking applications.",
+  cicd: "I've built CI/CD pipelines with Jenkins, GitHub Actions and Azure DevOps, automating builds, testing, security scans and rollbacks.",
+  tools: "My core stack is AWS, Azure and GCP, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana.",
+  contact: "Thanks for asking! You can reach me through the contact section or LinkedIn below. I'd love to hear from you.",
+  resume: "Sure, my résumé is downloading now. If it doesn't start, grab my résumé with the button below.",
+};
+
+/** Answer for a suggested chip: its clip script as the text, with the intent's links. */
 export function answerFor(id: string): Answer {
   const it = INTENTS.find((x) => x.id === id);
-  return it ? toAnswer(it) : FALLBACK;
-}
-
-/** Make the spoken version read naturally. */
-export function speakable(text: string): string {
-  return text
-    .replace(/\bSr\./g, "Senior")
-    .replace(/CI\/CD/g, "C I C D")
-    .replace(/résumé/gi, "resume")
-    .replace(/\s[–-]\s/g, " to ")
-    .replace(/(\w)\/(\w)/g, "$1 and $2")
-    .replace(/—/g, ",")
-    .replace(/[↓↗]/g, "");
+  if (!it) return FALLBACK;
+  const a = toAnswer(it);
+  if (CHIP_SCRIPTS[id]) a.text = CHIP_SCRIPTS[id];
+  return a;
 }

@@ -220,6 +220,24 @@ export const HERO: HeroMedia = {
   poster: "/hero/hero-poster.webp", // frame 0 of hero.mp4 (build-hero-assets.py), so playback starts without a jump
 };
 
+/** Suggested "Ask me" chips that can have a lip-synced answer clip. */
+export type AnswerClipId = "who" | "whatdo" | "current" | "kubernetes" | "aws" | "cicd" | "tools" | "contact" | "resume";
+export type AnswerClip = { webm: string; mp4: string; poster: string };
+
+/**
+ * Answer-clip manifest. Add a chip id here once `scripts/build-hero-assets.py --answer <id> inputs/answers/<id>.mp4`
+ * has written public/hero/answers/<id>.{webm,mp4} + <id>-poster.webp (same crop/box as the hero loop).
+ * Chips not listed here, or whose files fail to load, answer text-only. Scripts: clips/ANSWER-CLIPS.md.
+ */
+export const ANSWER_CLIP_IDS: AnswerClipId[] = [
+  // "who", "whatdo", "current", "kubernetes", "aws", "cicd", "tools", "contact", "resume",
+];
+
+export function answerClip(id: string): AnswerClip | null {
+  if (!HERO.enabled || !(ANSWER_CLIP_IDS as string[]).includes(id)) return null;
+  return { webm: `/hero/answers/${id}.webm`, mp4: `/hero/answers/${id}.mp4`, poster: `/hero/answers/${id}-poster.webp` };
+}
+
 export const QUICK_FACTS: QuickFact[] = [
   { label: "Role", value: "Sr. DevOps Engineer" },
   { label: "Currently", value: "JPMC, Remote · May 2025 – Till Date" },
