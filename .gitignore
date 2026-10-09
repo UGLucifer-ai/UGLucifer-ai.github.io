@@ -1,0 +1,30 @@
+# deps
+node_modules/
+# next / build output
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+# env
+.env*
+!.env.example
+# python
+__pycache__/
+*.pyc
+.venv/
+# hero pipeline scratch + raw inputs (raw résumé, photos, video live in inputs/ — never committed
+# ; the public copy of the résumé is public/resume.pdf)
+.hero-tmp/
+/inputs/
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# logs
+npm-debug.log*
+yarn-error.log*
+# playwright
+test-results/
+playwright-report/
+screenshots/
