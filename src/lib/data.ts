@@ -232,7 +232,8 @@ export type AnswerClip = { webm: string; mp4: string; poster: string };
 export const ANSWER_CLIP_IDS: AnswerClipId[] = [
   "who",
   "whatdo",
-  // still to come: "current", "kubernetes", "aws", "cicd", "tools", "contact", "resume",
+  "current",
+  // still to come: "kubernetes", "aws", "cicd", "tools", "contact", "resume",
 ];
 
 export function answerClip(id: string): AnswerClip | null {
