@@ -39,7 +39,7 @@ Every script is first person, about 15–22 words (6–8 seconds spoken; Flow cl
 
 **Save as:** `inputs/answers/who.mp4` · **Build:** `python3 scripts/build-hero-assets.py --answer who inputs/answers/who.mp4`
 
-**Spoken script (21 words):**
+**Spoken script (22 words):**
 
 > Hi, I'm Uday Charan Gopi, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP.
 

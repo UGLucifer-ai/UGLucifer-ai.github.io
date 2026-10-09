@@ -12,8 +12,9 @@ Outputs (default --out public/):
 
 Answer clips (--answer <id>): one lip-synced Google Flow clip per "Ask me" chip →
   public/hero/answers/<id>.mp4 / <id>.webm / <id>-poster.webp
-  Same crop box, white padding/feather and whiten levels as the hero loop (so the character
-  doesn't jump when the clips swap), leading/trailing silence trimmed to --lead (0.2 s),
+  Same crop box, white padding/feather and whiten levels as the hero loop — and if Flow framed the
+  person at a different size/position, the box is scaled/shifted so head-top, hem and centre land
+  exactly where they are in the loop (no jump when the clips swap; --no-align to disable) — leading/trailing silence trimmed to --lead (0.2 s),
   no loop and no cross-fade. Then add <id> to ANSWER_CLIP_IDS in src/lib/data.ts.
 
 Pipeline
@@ -386,10 +387,34 @@ def loop_window(meta: dict, start: float, duration: float | None) -> float:
     return int(D * meta["fps"] + 1e-6) / meta["fps"]
 
 
+def person_metrics(src: Path, meta: dict, n: int = 16) -> dict:
+    """Median head-top row, trouser-hem row and lower-body centre column (source px) of the person over n
+    full-resolution frames. Uses clearly dark pixels (hair, beard, trousers), which don't move with the hands."""
+    dur = max(meta["duration"], 0.1)
+    raw = ffmpeg("-i", str(src), "-vf", f"fps={n / dur},format=gray", "-f", "rawvideo", "-", capture=True)
+    px = meta["w"] * meta["h"]
+    fr = np.frombuffer(raw, np.uint8)
+    fr = fr[: fr.size // px * px].reshape(-1, meta["h"], meta["w"])
+    tops, hems, cxs = [], [], []
+    for f in fr:
+        bg = np.percentile(f[: max(8, meta["h"] // 16)], 75)
+        m = f.astype(np.int16) < bg - 70
+        rows = np.where(m.sum(1) >= 4)[0]
+        if rows.size < 10:
+            continue
+        top, hem = int(rows[0]), int(rows[-1])
+        cols = np.where(m[int(top + (hem - top) * 0.6): hem + 1])[1]
+        tops.append(top); hems.append(hem); cxs.append(float(np.median(cols)))
+    if not tops:
+        sys.exit(f"✗ could not find the person in {src} for alignment — pass --no-align")
+    return {"top": float(np.median(tops)), "hem": float(np.median(hems)), "cx": float(np.median(cxs))}
+
+
 def save_framing(src: Path, meta: dict, box: "Box", lv: tuple[float, float, float], feather: int) -> None:
     FRAMING.write_text(json.dumps({
         "source": src.name, "src_w": meta["w"], "src_h": meta["h"],
         "box": [box.w, box.h, box.x, box.y], "levels": [round(c, 4) for c in lv], "feather": feather,
+        "person": {k: round(v, 1) for k, v in person_metrics(src, meta).items()},
     }, indent=2) + "\n")
     print(f"• framing saved → {FRAMING}")
 
@@ -437,10 +462,33 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
     else:
         sys.exit(f"✗ clip aspect {meta['w']}×{meta['h']} ≠ intro {fr['src_w']}×{fr['src_h']}: generate the clip in the "
                  "same aspect ratio as the intro (the framing would not match)")
+    if not args.no_align:
+        ref_p = fr.get("person")
+        if ref_p is None:  # framing file from before alignment existed → measure the intro once and store it
+            if not args.ref.exists():
+                sys.exit(f"✗ {FRAMING.name} has no person metrics and {args.ref} is missing — pass --ref or --no-align")
+            ref_p = {k: round(v, 1) for k, v in person_metrics(args.ref, probe(args.ref)).items()}
+            fr["person"] = ref_p
+            FRAMING.write_text(json.dumps(fr, indent=2) + "\n")
+        kx = meta["w"] / fr["src_w"]  # compare in this clip's pixel scale
+        ref_h, ref_top, ref_cx = (ref_p["hem"] - ref_p["top"]) * kx, ref_p["top"] * kx, ref_p["cx"] * kx
+        ans = person_metrics(clip, meta)
+        sc = (ans["hem"] - ans["top"]) / ref_h  # answer person size relative to the loop's
+        print(f"• person: loop top {ref_top:.1f} / hem {ref_p['hem'] * kx:.1f} / centre {ref_cx:.1f}; "
+              f"clip top {ans['top']:.1f} / hem {ans['hem']:.1f} / centre {ans['cx']:.1f}  → size ×{sc:.4f}")
+        if abs(sc - 1) > 0.004 or abs(ans["top"] - ref_top) > 2 or abs(ans["cx"] - ref_cx) > 2:
+            # scale/shift the hero box so head-top, hem and centre land exactly where they are in the loop
+            nw, nh = box.w * sc, box.h * sc
+            nx = ans["cx"] - (ref_cx - box.x) * sc
+            ny = ans["top"] - (ref_top - box.y) * sc
+            box = Box(even(nw), even(nh), even(nx), even(ny), meta["w"], meta["h"])
+            print(f"  ! Flow framed this clip differently — aligned the hero box to {box} (--no-align to disable)")
+        else:
+            print("  ✓ same framing as the loop — hero box used as is")
     lv = (args.whiten_max,) * 3 if args.whiten_max else tuple(fr["levels"])
     whiten = f"colorlevels=rimax={lv[0]:.3f}:gimax={lv[1]:.3f}:bimax={lv[2]:.3f}"
     bl = backdrop_levels(clip, meta["duration"] / 2, meta)
-    print(f"• crop {box} (hero box), whiten max {tuple(round(c, 3) for c in lv)} (hero levels); "
+    print(f"• crop {box} ({"hero box" if args.no_align or box.w == bw else "aligned hero box"}), whiten max {tuple(round(c, 3) for c in lv)} (hero levels); "
           f"clip backdrop RGB ≈ {tuple(round(c * 255) for c in bl)}")
     if min(bl[i] - lv[i] for i in range(3)) < -0.004:
         print("  ! this clip's backdrop is darker than the intro's — it may not whiten fully; try --whiten-max")
@@ -554,6 +602,8 @@ def main() -> None:
     ap.add_argument("--lead", type=float, default=0.2, help="--answer: silence kept before/after speech, seconds (default 0.2)")
     ap.add_argument("--ref", type=Path, default=Path("inputs/intro.mp4"),
                     help="--answer: intro video to recompute the hero framing from if scripts/hero-framing.json is missing")
+    ap.add_argument("--no-align", action="store_true",
+                    help="--answer: use the hero crop box as is, without matching the person's size/position to the loop")
     ap.add_argument("--keep-tmp", action="store_true")
     args = ap.parse_args()
 

@@ -230,7 +230,8 @@ export type AnswerClip = { webm: string; mp4: string; poster: string };
  * Chips not listed here, or whose files fail to load, answer text-only. Scripts: clips/ANSWER-CLIPS.md.
  */
 export const ANSWER_CLIP_IDS: AnswerClipId[] = [
-  // "who", "whatdo", "current", "kubernetes", "aws", "cicd", "tools", "contact", "resume",
+  "who",
+  // still to come: "whatdo", "current", "kubernetes", "aws", "cicd", "tools", "contact", "resume",
 ];
 
 export function answerClip(id: string): AnswerClip | null {
