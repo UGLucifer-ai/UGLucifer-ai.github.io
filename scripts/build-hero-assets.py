@@ -24,7 +24,7 @@ Examples
   python3 scripts/build-hero-assets.py inputs/intro.mp4
   python3 scripts/build-hero-assets.py inputs/intro.mp4 --crop 800:1000:560:80
   python3 scripts/build-hero-assets.py inputs/intro.mp4 --photo inputs/photo.jpg --photo-crop 2092:2615:490:572
-  python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo.jpg --photo-crop 2092:2615:490:572
+  python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
 """
 from __future__ import annotations
 
@@ -269,13 +269,71 @@ def clearest_frame_time(src: Path, crop: str, start: float, dur: float) -> float
     return start + best * dur / n
 
 
+def _pad_photo_with_backdrop(photo: Path, left: int, top: int, right: int, bottom: int, dst: Path) -> None:
+    """Extend a photo's canvas with a backdrop matched to its own edges (subject pixels untouched).
+
+    Each new pixel copies the smoothed edge colour of its column/row (outliers such as hair
+    touching the edge are replaced by the edge median), plus grain matched to the backdrop.
+    """
+    m = probe(photo)
+    w, h = m["w"], m["h"]
+    img = np.frombuffer(ffmpeg("-i", str(photo), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+                               capture=True), np.uint8).reshape(h, w, 3).astype(np.float32)
+    rng = np.random.default_rng(7)
+
+    def edge_profile(strip: np.ndarray) -> np.ndarray:  # strip: (n, k, 3) -> smoothed (n, 3)
+        prof = strip.mean(axis=1)
+        med = np.median(prof, axis=0)
+        bad = np.abs(prof - med).max(axis=1) > 12
+        prof[bad] = med
+        k = max(3, len(prof) // 12) | 1
+        pad = np.pad(prof, ((k // 2, k // 2), (0, 0)), mode="edge")
+        ker = np.ones(k) / k
+        return np.stack([np.convolve(pad[:, c], ker, mode="valid") for c in range(3)], axis=1)
+
+    grain = float(np.median([img[:8, :8].std(), img[:8, -8:].std()]))
+    out = np.empty((h + top + bottom, w + left + right, 3), np.float32)
+    out[top:top + h, left:left + w] = img
+    if top:
+        out[:top, left:left + w] = edge_profile(img[:3].transpose(1, 0, 2))[None]
+    if bottom:
+        out[top + h:, left:left + w] = edge_profile(img[-3:].transpose(1, 0, 2))[None]
+    if left:
+        out[:, :left] = edge_profile(out[:, left:left + 3])[:, None]
+    if right:
+        out[:, left + w:] = edge_profile(out[:, left + w - 3:left + w])[:, None]
+    mask = np.ones(out.shape[:2], bool)
+    mask[top:top + h, left:left + w] = False
+    out[mask] += rng.normal(0, grain, (int(mask.sum()), 3))
+    raw = np.clip(out + 0.5, 0, 255).astype(np.uint8)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "-s", f"{out.shape[1]}x{out.shape[0]}", "-i", "-", "-frames:v", "1", str(dst)],
+                   input=raw.tobytes(), check=True)
+
+
 def make_portrait_from_photo(photo: Path, crop: str | None, out: Path) -> None:
+    """480×600 portrait. --photo-crop W:H:X:Y may reach outside the photo (e.g. negative Y for
+    headroom); the overflow is filled with a backdrop matched to the photo's own edges."""
+    src = photo
+    tmpdir = None
     if crop:
-        w, h, x, y = crop.split(":")
+        w, h, x, y = (int(v) for v in crop.split(":"))
+        m = probe(photo)
+        pl, pt = max(0, -x), max(0, -y)
+        pr, pb = max(0, x + w - m["w"]), max(0, y + h - m["h"])
+        if pl or pt or pr or pb:
+            tmpdir = Path(tempfile.mkdtemp(prefix="portrait-"))
+            src = tmpdir / "padded.png"
+            _pad_photo_with_backdrop(photo, pl, pt, pr, pb, src)
+            x, y = x + pl, y + pt
         vf = f"crop={w}:{h}:{x}:{y},scale=480:600:flags=lanczos"
     else:  # default: 4:5 box from the top-centre (head-to-shirt for a typical head-and-shoulders photo)
         vf = "crop='min(iw,ih*4/5)':'min(iw,ih*4/5)*5/4':'(iw-min(iw,ih*4/5))/2':0,scale=480:600:flags=lanczos"
-    ffmpeg("-i", str(photo), "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "86", str(out))
+    try:
+        ffmpeg("-i", str(src), "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "86", str(out))
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def make_portrait_from_video(src: Path, crop: str, t: float, out: Path, whiten: str = WHITEN) -> None:
@@ -312,8 +370,8 @@ def main() -> None:
                     help="colorlevels max for all channels (default: auto from the backdrop, capped at 0.98)")
     ap.add_argument("--og-time", type=float, default=None, help="frame time (s) for og.jpg (default: sharpest frame)")
     ap.add_argument("--photo", type=Path, help="optional photo for portrait-bust.webp")
-    ap.add_argument("--photo-crop", help="W:H:X:Y head-to-shirt crop of --photo (4:5 recommended)")
-    ap.add_argument("--portrait-only", action="store_true", help="only build portrait-bust.webp (+ og.jpg) from --photo")
+    ap.add_argument("--photo-crop", help="W:H:X:Y head-to-shirt crop of --photo (4:5 recommended; may extend past the edges, e.g. negative Y for headroom — padded with a matched backdrop)")
+    ap.add_argument("--portrait-only", action="store_true", help="only build portrait-bust.webp from --photo (hero video and og.jpg untouched)")
     ap.add_argument("--keep-tmp", action="store_true")
     args = ap.parse_args()
 
@@ -327,9 +385,9 @@ def main() -> None:
     if args.portrait_only:
         if not args.photo:
             sys.exit("✗ --portrait-only needs --photo")
+        # og.jpg is left alone: it comes from the intro video (full run), not the ID photo
         make_portrait_from_photo(args.photo, args.photo_crop, out / "portrait-bust.webp")
-        make_og(["-i", str(out / "portrait-bust.webp")], out / "og.jpg", "null")
-        print(f"✓ {out / 'portrait-bust.webp'}\n✓ {out / 'og.jpg'}")
+        print(f"✓ {out / 'portrait-bust.webp'}")
         return
 
     if not args.input or not args.input.exists():
