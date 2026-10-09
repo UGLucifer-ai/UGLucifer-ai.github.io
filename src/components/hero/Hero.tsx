@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { HERO, PROFILE, HAS, asset } from "@/lib/data";
 import Pill from "@/components/ui/Pill";
+import AskMe, { type AskMeVoice } from "@/components/hero/AskMe";
 
 /** Splits "Sr. DevOps Engineer" → ["Sr. DevOps", "Engineer"] for the serif accent. */
 function splitRole(role: string): [string, string] {
@@ -19,6 +20,10 @@ export default function Hero() {
   const visibleRef = useRef(true);
   const userMutedRef = useRef(false);
   const justUnlockedRef = useRef(false);
+  const soundOnRef = useRef(false);
+  soundOnRef.current = soundOn;
+  const speakingRef = useRef(false);
+  const resumeAfterSpeechRef = useRef(false);
 
   const [lead, accent] = splitRole(PROFILE.role || PROFILE.name);
 
@@ -30,7 +35,13 @@ export default function Hero() {
       await v.play();
       setSoundOn(withSound);
       if (withSound) setBlocked(false);
-    } catch {
+    } catch (err) {
+      if ((err as DOMException)?.name === "AbortError") {
+        // play() interrupted by a pause (e.g. a spoken answer started) — not an autoplay block
+        setSoundOn(!v.muted);
+        if (!v.muted) setBlocked(false);
+        return;
+      }
       if (withSound) {
         // autoplay with sound blocked → fall back to muted playback
         v.muted = true;
@@ -78,8 +89,9 @@ export default function Hero() {
         const v = videoRef.current;
         if (!v) return;
         visibleRef.current = e.intersectionRatio >= 0.35;
-        if (visibleRef.current) v.play().catch(() => {});
-        else v.pause();
+        if (visibleRef.current) {
+          if (!speakingRef.current) v.play().catch(() => {});
+        } else v.pause();
       },
       { threshold: [0, 0.35, 0.6, 1] },
     );
@@ -99,6 +111,27 @@ export default function Hero() {
       userMutedRef.current = false;
       tryPlay(true);
     }
+  };
+
+  // one shared sound state for the intro video and the spoken "Ask me" answers
+  const onSpeaking = useCallback((speaking: boolean) => {
+    if (speaking === speakingRef.current) return;
+    speakingRef.current = speaking;
+    const v = videoRef.current;
+    if (!v) return;
+    if (speaking) {
+      resumeAfterSpeechRef.current = !v.paused;
+      v.pause(); // the intro's own voice must not talk over the answer
+    } else {
+      if (resumeAfterSpeechRef.current && visibleRef.current) v.play().catch(() => {});
+      resumeAfterSpeechRef.current = false;
+    }
+  }, []);
+  const voice: AskMeVoice = {
+    soundOn,
+    canSpeak: () => !userMutedRef.current && (soundOnRef.current || justUnlockedRef.current),
+    toggleSound,
+    onSpeaking,
   };
 
   const ctas = [
@@ -175,6 +208,8 @@ export default function Hero() {
         )}
       </div>
 
+      <AskMe voice={voice} />
+
       <style>{`
         .hero{position:relative;min-height:100svh;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;overflow:hidden;padding-top:84px}
         .hero-ghost{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);margin:0;font-weight:800;letter-spacing:-.06em;line-height:.8;font-size:clamp(120px,30vw,520px);color:transparent;-webkit-text-stroke:1.5px rgba(13,13,13,.13);white-space:nowrap;pointer-events:none;user-select:none;animation:ghostIn 1.6s var(--ease) both}
@@ -192,7 +227,7 @@ export default function Hero() {
         .hero-copy>*{pointer-events:auto}
         .hero-title{margin-top:14px;font-size:clamp(40px,6.2vw,96px);max-width:9ch}
         .hero-ctas{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
-        @media (max-width: 860px){
+        @media (max-width: 959px){
           .hero{justify-content:flex-start;padding-top:76px;min-height:auto}
           .hero-media{position:relative;left:auto;right:auto;height:62svh;width:calc(62svh * .8)}
           .hero-media--empty{height:28svh}
