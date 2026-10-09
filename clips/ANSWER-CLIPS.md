@@ -25,7 +25,7 @@ Every script is first person, about 15–22 words (6–8 seconds spoken; Flow cl
 
 | id | chip | words | script |
 |---|---|---|---|
-| `who` | Who are you? | 21 | Hi, I'm Uday Charan, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP. |
+| `who` | Who are you? | 22 | Hi, I'm Uday Charan Gopi, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP. |
 | `whatdo` | What do you do? | 18 | I design and automate cloud and Kubernetes platforms: infrastructure as code with Terraform, CI/CD pipelines, and GitOps deployments. |
 | `current` | Where do you work now? | 19 | Since May 2025, I've been a Senior DevOps Engineer at JPMC, building secure AWS and Azure infrastructure for banking. |
 | `kubernetes` | Kubernetes experience? | 20 | I've run Kubernetes on EKS, AKS and OpenShift, handling upgrades, autoscaling and troubleshooting, and deploying with Helm and Argo CD. |
@@ -41,7 +41,7 @@ Every script is first person, about 15–22 words (6–8 seconds spoken; Flow cl
 
 **Spoken script (21 words):**
 
-> Hi, I'm Uday Charan, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP.
+> Hi, I'm Uday Charan Gopi, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP.
 
 **Résumé source:** Résumé header ("Uday Charan · Sr. DevOps Engineer") + Professional Summary bullet 1 ("Senior DevOps and Cloud Engineer … architecting, automating, and operating secure, scalable enterprise infrastructure across AWS, Azure, GCP …").
 
@@ -81,7 +81,7 @@ PERFORMANCE:
 The character is answering a visitor's question directly to the camera.
 
 EXACT SPOKEN SCRIPT:
-"Hi, I'm Uday Charan, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP."
+"Hi, I'm Uday Charan Gopi, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP."
 
 VOICE:
 - Natural male voice, the same voice as in his intro video.

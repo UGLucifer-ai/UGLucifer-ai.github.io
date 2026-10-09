@@ -330,7 +330,7 @@ function toAnswer(it: Intent): Answer {
  * Each is ~15–22 words (6–8 s spoken) and uses only résumé facts.
  */
 export const CHIP_SCRIPTS: Record<string, string> = {
-  who: "Hi, I'm Uday Charan, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP.",
+  who: "Hi, I'm Uday Charan Gopi, a Senior DevOps and Cloud Engineer. I automate and run secure infrastructure across AWS, Azure and GCP.",
   whatdo: "I design and automate cloud and Kubernetes platforms: infrastructure as code with Terraform, CI/CD pipelines, and GitOps deployments.",
   current: "Since May 2025, I've been a Senior DevOps Engineer at JPMC, building secure AWS and Azure infrastructure for banking.",
   kubernetes: "I've run Kubernetes on EKS, AKS and OpenShift, handling upgrades, autoscaling and troubleshooting, and deploying with Helm and Argo CD.",
