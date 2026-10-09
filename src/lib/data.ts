@@ -194,7 +194,7 @@ export const PROFILE: Profile = {
   linkedin: "https://www.linkedin.com/in/udayg08/", // embedded hyperlink in the résumé
   resume: "/resume.pdf",
   portrait: "/portrait-bust.webp",
-  siteUrl: "", // TODO(deploy): e.g. "https://<user>.github.io/<repo>"
+  siteUrl: "https://uglucifer-ai.github.io", // GitHub Pages user site (served at the root)
 };
 
 /** All Professional Summary bullets, verbatim (bullet artefacts stripped). */

@@ -72,6 +72,9 @@ Then set `HERO.enabled = true` in `src/lib/data.ts`.
 
 ## Deploy (static)
 
+Live: **https://uglucifer-ai.github.io/** (repo `UGLucifer-ai/UGLucifer-ai.github.io`, GitHub Pages user site served at the root, deployed by `.github/workflows/deploy.yml`).
+
+
 `next.config.ts` sets `output: "export"`, so `npm run build` writes a static site to `out/`. For a GitHub Pages **project** site, build with `NEXT_PUBLIC_BASE_PATH=/<repo>`. `.github/workflows/deploy.yml` does this automatically on push to `main` once Pages is set to "GitHub Actions". After deploying, set `PROFILE.siteUrl` so the OG/Twitter image tags are emitted.
 
 ## Credits and licences
