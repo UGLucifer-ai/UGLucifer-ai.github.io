@@ -28,7 +28,7 @@ Raw inputs go in `inputs/` (git-ignored): `resume.pdf`, `intro.mp4`, photos. The
 | # | Section | Component | Data | Shown when |
 |---|---------|-----------|------|------------|
 | — | Hero | `hero/Hero.tsx` | `PROFILE.role`, `HERO` | always (video only when `HERO.enabled`) |
-| 01 | About: lanyard ID card | `sections/About.tsx` | `PROFILE`, `QUICK_FACTS`, `ID_CARD` | `PROFILE.resumeSummary` set |
+| 01 | About: playable lanyard ID card (drag/pull, tap to flip; physics in `lib/lanyard-sim.ts`) | `sections/About.tsx` | `PROFILE`, `QUICK_FACTS`, `ID_CARD` | `PROFILE.resumeSummary` set |
 | 02 | Skills: periodic table | `sections/Skills.tsx` | `SKILL_GROUPS` | any skills |
 | — | Work: accordion gallery | `sections/Work.tsx` | `PROJECTS` | any projects |
 | — | Certifications: ink-flood index | `sections/Certifications.tsx` | `CERTIFICATIONS` | any certifications |
@@ -87,3 +87,7 @@ Live: **https://uglucifer-ai.github.io/** (repo `UGLucifer-ai/UGLucifer-ai.githu
 - **Fonts** (SIL Open Font License 1.1, from the official google/fonts repository, converted losslessly TTF → WOFF2): Inter Tight (The Inter Project Authors), Instrument Serif (The Instrument Serif Project Authors), JetBrains Mono (The JetBrains Mono Project Authors). The licences are in `src/fonts/OFL-*.txt`.
 - **Brand logos:** [devicon](https://github.com/devicons/devicon) "original" SVGs, MIT licence (`public/logos/LICENSE-devicon.txt`), and [Simple Icons](https://github.com/simple-icons/simple-icons) paths coloured with each brand's official hex, CC0 1.0 (`public/logos/LICENSE-simple-icons.md`, `si-*.svg`). All trademarks belong to their owners; the logos are only used to identify the technologies.
 - **Concept icons** (CI/CD, IaC, GitOps …) are custom line icons drawn in `TechLogo.tsx`.
+
+## Lanyard physics (About ID card)
+
+`src/lib/lanyard-sim.ts` is a dependency-free Verlet simulation run by `useLanyard` in `About.tsx` (fixed 1/120 s step with an accumulator, 12 constraint iterations, rendering interpolated between steps): anchor → fabric strap (6-link rope) → badge reel → coil cord (preloaded spring, 16–300 px; 220 px on mobile) → clip → card (rigid body, 4 corners + 6 sticks). Grab and pull with mouse or touch (pointer capture; `touch-action:none` only on the card); release and it snaps back and swings until it settles. A tap (< 6 px, < 250 ms) flips the card, a drag never does; Enter/Space flip, arrow keys swing it. The card is kept inside the section and viewport while dragging and never overflows horizontally. With `prefers-reduced-motion` it is a static card that only flips. Tune the constants in `PHYS`.
