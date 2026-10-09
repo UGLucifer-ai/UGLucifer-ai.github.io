@@ -51,6 +51,8 @@ python3 scripts/build-hero-assets.py inputs/intro.mp4
 # optional: explicit crop (W:H:X:Y in source px), different window, or a photo for the ID card
 python3 scripts/build-hero-assets.py inputs/intro.mp4 --crop 800:1000:560:80 --duration 10 --fade 0.5 \
         --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
+# just the <video poster> (frame 0 of the existing public/hero/hero.mp4)
+python3 scripts/build-hero-assets.py --poster-only
 # just the ID-card portrait from a photo (hero video and og.jpg untouched)
 python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
 ```
@@ -61,7 +63,7 @@ What it does:
 2. **Whiten:** `colorlevels`, with the max level set automatically from the measured backdrop (capped at 0.98; override with `--whiten-max`). An off-white wall becomes pure white, so `mix-blend-mode: multiply` melts it into the paper.
 3. **Loop:** by default the whole clip (≤ 15 s) is used, with no stretching or retiming. The last 0.5 s of picture is cross-faded into the first 0.5 s with ffmpeg `xfade`, and the audio gets the identical cross-fade, sample-accurate and equal-power, in **numpy** (not `acrossfade`). The script finds where speech starts and ends and checks that both fade windows are silent, so the loop point never falls mid-word. If they aren't, it shortens the fade or stops with an error. A frame-integrity check guards against ffmpeg filter bugs. (On ffmpeg 7.1, `fps → colorlevels → pad` corrupts frames, so `fps` runs last.)
 4. **Export:** `public/hero/hero.mp4` (H.264 yuv420p CRF 24 `-preset slow`, AAC 96k, `+faststart`) and `public/hero/hero.webm` (VP9 CRF 36, Opus 80k).
-5. **Stills:** `public/portrait-bust.webp` (480×600 head-to-shirt, from `--photo` or the sharpest frame; `--photo-crop` may reach past the photo's edges, e.g. a negative Y for headroom, and the overflow is filled with a backdrop matched to the photo's own edge colour and grain) and `public/og.jpg` (1200×630, from the sharpest frame or `--og-time`).
+5. **Stills:** `public/hero/hero-poster.webp` is the `<video poster>`: frame 0 of the encoded `hero.mp4` (768×960, WebP q90, ~16 KB). The decoded yuv420p goes straight into libwebp (both BT.601 limited range), so it is the exact first frame that plays (no jump when playback starts) and its backdrop stays pure white for `mix-blend-mode: multiply`. Every full run regenerates it. `public/portrait-bust.webp` (480×600 head-to-shirt, from `--photo` or the sharpest frame; `--photo-crop` may reach past the photo's edges, e.g. a negative Y for headroom, and the overflow is filled with a backdrop matched to the photo's own edge colour and grain) and `public/og.jpg` (1200×630, from the sharpest frame or `--og-time`).
 
 Current build: `python3 scripts/build-hero-assets.py inputs/intro.mp4`
 (source 720×1280 @ 24 fps, 10 s, speech 0.59–9.37 s → a 9.5 s loop; `og.jpg` from the sharpest video frame).

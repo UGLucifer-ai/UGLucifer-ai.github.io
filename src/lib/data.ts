@@ -217,7 +217,7 @@ export const HERO: HeroMedia = {
   enabled: true, // built from inputs/intro.mp4 by scripts/build-hero-assets.py
   webm: "/hero/hero.webm",
   mp4: "/hero/hero.mp4",
-  poster: "/portrait-bust.webp",
+  poster: "/hero/hero-poster.webp", // frame 0 of hero.mp4 (build-hero-assets.py), so playback starts without a jump
 };
 
 export const QUICK_FACTS: QuickFact[] = [

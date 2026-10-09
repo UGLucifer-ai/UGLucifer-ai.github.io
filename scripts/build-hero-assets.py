@@ -5,6 +5,7 @@ build-hero-assets.py — turn the talking intro video into seamless hero assets.
 Outputs (default --out public/):
   public/hero/hero.mp4        H.264 yuv420p, CRF 24, preset slow, AAC 96k, +faststart
   public/hero/hero.webm       VP9 CRF 36, Opus 80k
+  public/hero/hero-poster.webp  frame 0 of hero.mp4 (the <video poster>), WebP q90
   public/portrait-bust.webp   480×600 head-to-shirt crop (from --photo, else clearest frame)
   public/og.jpg               1200×630 social card
 
@@ -16,7 +17,7 @@ Pipeline
      cross-faded (ffmpeg xfade) into the first --fade seconds; the audio gets
      the identical cross-fade sample-accurately in numpy (no acrossfade).
      Nothing is stretched or retimed, so lip-sync is preserved.
-  4. Export mp4 + webm.  5. Portrait still + OG image.
+  4. Export mp4 + webm.  5. Poster (frame 0 of hero.mp4) + portrait still + OG image.
 
 Requirements: ffmpeg + ffprobe on PATH, Python 3.9+, numpy.
 
@@ -24,6 +25,7 @@ Examples
   python3 scripts/build-hero-assets.py inputs/intro.mp4
   python3 scripts/build-hero-assets.py inputs/intro.mp4 --crop 800:1000:560:80
   python3 scripts/build-hero-assets.py inputs/intro.mp4 --photo inputs/photo.jpg --photo-crop 2092:2615:490:572
+  python3 scripts/build-hero-assets.py --poster-only
   python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
 """
 from __future__ import annotations
@@ -343,6 +345,17 @@ def make_portrait_from_video(src: Path, crop: str, t: float, out: Path, whiten: 
     ffmpeg("-ss", f"{t}", "-i", str(src), "-frames:v", "1", "-vf", vf, "-c:v", "libwebp", "-quality", "86", str(out))
 
 
+def make_poster(video: Path, out: Path) -> None:
+    """<video poster>: frame 0 of the *encoded* hero.mp4, so it is pixel-identical to what plays first.
+
+    The decoded yuv420p (BT.601, limited range — the same matrix/range the video is tagged with and
+    that WebP lossy uses) goes straight into libwebp with no RGB round-trip or chroma resampling, so
+    colours match the video and the whitened backdrop stays 255 white for mix-blend-mode: multiply.
+    """
+    ffmpeg("-i", str(video), "-map", "0:v:0", "-frames:v", "1", "-pix_fmt", "yuv420p",
+           "-c:v", "libwebp", "-quality", "90", "-compression_level", "6", "-preset", "picture", str(out))
+
+
 def make_og(still_src: list[str], out: Path, vf_chain: str) -> None:
     """1200×630: white card with the person centred-right (still is already white-backed)."""
     ffmpeg(*still_src, "-frames:v", "1", "-update", "1",
@@ -372,6 +385,8 @@ def main() -> None:
     ap.add_argument("--photo", type=Path, help="optional photo for portrait-bust.webp")
     ap.add_argument("--photo-crop", help="W:H:X:Y head-to-shirt crop of --photo (4:5 recommended; may extend past the edges, e.g. negative Y for headroom — padded with a matched backdrop)")
     ap.add_argument("--portrait-only", action="store_true", help="only build portrait-bust.webp from --photo (hero video and og.jpg untouched)")
+    ap.add_argument("--poster-only", action="store_true",
+                    help="only (re)build hero/hero-poster.webp from the existing hero/hero.mp4")
     ap.add_argument("--keep-tmp", action="store_true")
     args = ap.parse_args()
 
@@ -381,6 +396,14 @@ def main() -> None:
 
     out = args.out
     (out / "hero").mkdir(parents=True, exist_ok=True)
+
+    if args.poster_only:
+        mp4 = out / "hero" / "hero.mp4"
+        if not mp4.exists():
+            sys.exit(f"✗ {mp4} not found; run the full pipeline first")
+        make_poster(mp4, out / "hero" / "hero-poster.webp")
+        print(f"✓ {out / 'hero' / 'hero-poster.webp'}")
+        return
 
     if args.portrait_only:
         if not args.photo:
@@ -502,6 +525,9 @@ def main() -> None:
                "-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", "80k", "-shortest", str(webm))
 
         # ── stills
+        poster = out / "hero" / "hero-poster.webp"
+        print("• hero-poster.webp from frame 0 of hero.mp4")
+        make_poster(mp4, poster)
         portrait = out / "portrait-bust.webp"
         if args.photo:
             print(f"• portrait from photo {args.photo}")
@@ -517,7 +543,7 @@ def main() -> None:
                "-frames:v", "1", "-update", "1", str(og_still))
         make_og(["-i", str(og_still)], out / "og.jpg", "null")
 
-        for p in (mp4, webm, portrait, out / "og.jpg"):
+        for p in (mp4, webm, poster, portrait, out / "og.jpg"):
             print(f"✓ {p}  ({p.stat().st_size / 1024:.0f} KB)")
         print("\nNext: set HERO.enabled = true in src/lib/data.ts")
     finally:
