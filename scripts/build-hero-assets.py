@@ -36,6 +36,15 @@ Examples
   python3 scripts/build-hero-assets.py --poster-only
   python3 scripts/build-hero-assets.py --portrait-only --photo inputs/photo-id.jpg --photo-crop 766:958:0:-66
   python3 scripts/build-hero-assets.py --answer who inputs/answers/who.mp4
+  python3 scripts/build-hero-assets.py --idle inputs/idle.mp4
+  python3 scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4
+
+Idle loop (--idle): a silent clip of him waiting (no talking) → public/hero/idle.mp4 / idle.webm (no audio
+  track) + idle-poster.webp. Same crop/align/whiten as the hero, seamless xfade picture loop (--fade).
+  Shown, muted and looping, after an answer ends. Then set HERO_IDLE.enabled = true in src/lib/data.ts.
+Idle door (--idle-door): optional ~8 s silent variation (he walks through a soft white door and comes back)
+  → public/hero/idle-door.{mp4,webm} + idle-door-poster.webp; no loop cross-fade, trimmed to the best-matching
+  start/end frames. Played once every ~3–4 idle loops. Then set HERO_IDLE.door.enabled = true.
 """
 from __future__ import annotations
 
@@ -387,13 +396,18 @@ def loop_window(meta: dict, start: float, duration: float | None) -> float:
     return int(D * meta["fps"] + 1e-6) / meta["fps"]
 
 
-def person_metrics(src: Path, meta: dict, n: int = 16) -> dict:
+def person_metrics(src: Path, meta: dict, n: int = 16, ranges: list[tuple[float, float]] | None = None) -> dict:
     """Median head-top row, trouser-hem row and lower-body centre column (source px) of the person over n
-    full-resolution frames. Uses clearly dark pixels (hair, beard, trousers), which don't move with the hands."""
-    dur = max(meta["duration"], 0.1)
-    raw = ffmpeg("-i", str(src), "-vf", f"fps={n / dur},format=gray", "-f", "rawvideo", "-", capture=True)
+    full-resolution frames. Uses clearly dark pixels (hair, beard, trousers), which don't move with the hands.
+    `ranges` = [(t0, t1), …] limits the sampling to those seconds (e.g. only where he stands centred)."""
     px = meta["w"] * meta["h"]
-    fr = np.frombuffer(raw, np.uint8)
+    chunks = []
+    for t0, t1 in ranges or [(0.0, max(meta["duration"], 0.1))]:
+        k = max(2, n // len(ranges)) if ranges else n
+        dur = max(t1 - t0, 0.05)
+        chunks.append(ffmpeg("-ss", f"{t0}", "-t", f"{dur}", "-i", str(src), "-vf", f"fps={k / dur},format=gray",
+                             "-f", "rawvideo", "-", capture=True))
+    fr = np.frombuffer(b"".join(c[: len(c) // px * px] for c in chunks), np.uint8)
     fr = fr[: fr.size // px * px].reshape(-1, meta["h"], meta["w"])
     tops, hems, cxs = [], [], []
     for f in fr:
@@ -439,18 +453,10 @@ def hero_framing(ref: Path, args) -> dict:
     return json.loads(FRAMING.read_text())
 
 
-def build_answer(clip: Path, aid: str, out: Path, args) -> None:
-    """Lip-synced answer clip → public/hero/answers/<aid>.{mp4,webm} + <aid>-poster.webp, framed like the loop."""
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", aid):
-        sys.exit("✗ --answer id must be lowercase letters, digits or dashes (e.g. who, kubernetes)")
-    if aid not in ANSWER_IDS:
-        print(f"  ! '{aid}' is not one of the chip ids {', '.join(ANSWER_IDS)}")
-    if not clip.exists():
-        sys.exit(f"✗ answer clip {clip} not found")
-    fr = hero_framing(args.ref, args)
-    meta = probe(clip)
-    print(f"• answer '{aid}': {clip} {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s, audio={meta['audio']}")
-
+def match_framing(clip: Path, meta: dict, fr: dict, args, align_ranges: list[tuple[float, float]] | None = None) -> tuple["Box", str, dict]:
+    """The hero loop's crop box + whiten levels for another Flow clip of the same character (answer or idle):
+    the box is scaled for another resolution and, unless --no-align, scaled/shifted so head-top, hem and
+    centre land exactly where they are in the loop. Returns (box, whiten filter, framing)."""
     # ── same crop box as the loop (scaled if Flow rendered the same framing at another resolution)
     bw, bh, bx, by = fr["box"]
     if (meta["w"], meta["h"]) == (fr["src_w"], fr["src_h"]):
@@ -472,7 +478,9 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
             FRAMING.write_text(json.dumps(fr, indent=2) + "\n")
         kx = meta["w"] / fr["src_w"]  # compare in this clip's pixel scale
         ref_h, ref_top, ref_cx = (ref_p["hem"] - ref_p["top"]) * kx, ref_p["top"] * kx, ref_p["cx"] * kx
-        ans = person_metrics(clip, meta)
+        ans = person_metrics(clip, meta, ranges=align_ranges)
+        if align_ranges:
+            print("  (alignment measured only over " + ", ".join(f"{a:.2f}–{b:.2f}s" for a, b in align_ranges) + ")")
         sc = (ans["hem"] - ans["top"]) / ref_h  # answer person size relative to the loop's
         print(f"• person: loop top {ref_top:.1f} / hem {ref_p['hem'] * kx:.1f} / centre {ref_cx:.1f}; "
               f"clip top {ans['top']:.1f} / hem {ans['hem']:.1f} / centre {ans['cx']:.1f}  → size ×{sc:.4f}")
@@ -492,6 +500,23 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
           f"clip backdrop RGB ≈ {tuple(round(c * 255) for c in bl)}")
     if min(bl[i] - lv[i] for i in range(3)) < -0.004:
         print("  ! this clip's backdrop is darker than the intro's — it may not whiten fully; try --whiten-max")
+
+    return box, whiten, fr
+
+
+def build_answer(clip: Path, aid: str, out: Path, args) -> None:
+    """Lip-synced answer clip → public/hero/answers/<aid>.{mp4,webm} + <aid>-poster.webp, framed like the loop."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", aid):
+        sys.exit("✗ --answer id must be lowercase letters, digits or dashes (e.g. who, kubernetes)")
+    if aid not in ANSWER_IDS:
+        print(f"  ! '{aid}' is not one of the chip ids {', '.join(ANSWER_IDS)}")
+    if not clip.exists():
+        sys.exit(f"✗ answer clip {clip} not found")
+    fr = hero_framing(args.ref, args)
+    meta = probe(clip)
+    print(f"• answer '{aid}': {clip} {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s, audio={meta['audio']}")
+
+    box, whiten, fr = match_framing(clip, meta, fr, args)
 
     # ── trim leading/trailing silence to --lead seconds (whole frames, picture and sound cut together)
     fps = meta["fps"]
@@ -579,6 +604,137 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def build_idle(clip: Path, out: Path, args) -> None:
+    """Silent idle loop (he waits, no lip movement) → public/hero/idle.{mp4,webm} + idle-poster.webp.
+    Same crop/align/whiten as the hero; audio dropped; seamless picture loop with the same xfade as the hero."""
+    if not clip.exists():
+        sys.exit(f"✗ idle clip {clip} not found")
+    fr = hero_framing(args.ref, args)
+    meta = probe(clip)
+    print(f"• idle: {clip} {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s (audio dropped)")
+    D = loop_window(meta, args.start, args.duration)
+    box, whiten, fr = match_framing(clip, meta, fr, args, [(args.start, args.start + D)])
+    F = args.fade
+    if D < 4 * F:
+        sys.exit(f"✗ usable clip ({D:.2f}s) is too short for a {F}s cross-fade")
+    fps = meta["fps"]
+    tmp = Path(tempfile.mkdtemp(prefix="idle-"))
+    try:
+        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1"
+        veil = tmp / "veil.rgba"
+        has_veil = write_edge_veil(veil, box, meta["w"], int(fr.get("feather", args.feather)))
+        veil_in = ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{OUT_W}x{OUT_H}", "-i", str(veil)] if has_veil else []
+        still_fc = (f"[0:v]{still_chain}[s0];[s0][1:v]overlay=eof_action=repeat:format=auto,format=yuv420p[still]"
+                    if has_veil else f"[0:v]{still_chain},format=yuv420p[still]")
+        # NB: keep `fps` LAST (ffmpeg 7.1 colorlevels/pad bug) — same xfade loop as the hero, picture only
+        fc = (f"{still_fc};[still]fps={meta['fps_str']},split[a][b];"
+              f"[a]trim=start={F}:end={D},setpts=PTS-STARTPTS,fps={meta['fps_str']}[body];"
+              f"[b]trim=start=0:end={F},setpts=PTS-STARTPTS,fps={meta['fps_str']}[head];"
+              f"[body][head]xfade=transition=fade:duration={F}:offset={D - 2 * F},format=yuv420p[v]")
+        video_tmp = tmp / "idle.mkv"
+        print(f"• seamless picture loop (xfade {F}s): {D - F:.3f}s")
+        ffmpeg("-ss", f"{args.start}", "-t", f"{D}", "-i", str(clip), *veil_in, "-filter_complex", fc,
+               "-map", "[v]", "-an", "-c:v", "ffv1", str(video_tmp))
+        t_chk = round((D / 2) * fps) / fps
+        def _gray(a: list[str]) -> np.ndarray:
+            raw = ffmpeg(*a, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-", capture=True)
+            return np.frombuffer(raw, np.uint8).astype(np.int16)
+        ref = _gray(["-ss", f"{args.start + t_chk}", "-i", str(clip), *veil_in, "-filter_complex", still_fc, "-map", "[still]"])
+        got = _gray(["-i", str(video_tmp), "-vf", f"select=eq(n\\,{int(round((t_chk - F) * fps))})"])
+        diff = float(np.abs(ref - got).mean()) if ref.size == got.size else 999.0
+        print(f"• integrity check @ {t_chk:.2f}s: mean |Δ| = {diff:.2f}")
+        if diff > 6:
+            sys.exit("✗ idle frames don't match the source render — ffmpeg filter issue; aborting")
+        mp4, webm, poster = out / "hero" / "idle.mp4", out / "hero" / "idle.webm", out / "hero" / "idle-poster.webp"
+        print("• encoding idle.mp4 (H.264 CRF 24 slow, no audio track, faststart)")
+        ffmpeg("-i", str(video_tmp), "-map", "0:v", "-an", "-c:v", "libx264", "-crf", "24", "-preset", "slow",
+               "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(mp4))
+        print("• encoding idle.webm (VP9 CRF 36, no audio track)")
+        ffmpeg("-i", str(video_tmp), "-map", "0:v", "-an", "-c:v", "libvpx-vp9", "-crf", "36", "-b:v", "0",
+               "-row-mt", "1", "-deadline", "good", "-pix_fmt", "yuv420p", str(webm))
+        make_poster(mp4, poster)
+        for f in (mp4, webm):
+            if probe(f)["audio"]:
+                sys.exit(f"✗ {f} has an audio track — expected none")
+        for f in (mp4, webm, poster):
+            print(f"✓ {f}  ({f.stat().st_size / 1024:.0f} KB)")
+        print("\nNext: set HERO_IDLE.enabled = true in src/lib/data.ts")
+    finally:
+        if args.keep_tmp:
+            print(f"(kept {tmp})")
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def build_idle_door(clip: Path, out: Path, args) -> None:
+    """Silent idle variation (he steps through a soft white door and comes back) → public/hero/idle-door.{mp4,webm}
+    + idle-door-poster.webp. Same crop/align/whiten as the hero, audio dropped, no loop cross-fade: trimmed so it
+    starts and ends on the best-matching pair of frames (the same resting pose), so it cuts in/out of the idle loop."""
+    if not clip.exists():
+        sys.exit(f"✗ idle-door clip {clip} not found")
+    fr = hero_framing(args.ref, args)
+    meta = probe(clip)
+    print(f"• idle-door: {clip} {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s (audio dropped)")
+    fps = meta["fps"]
+    # ── matching start/end frames (on uncropped grey thumbnails, so it doesn't depend on the crop): start within
+    #    the first min(1.5 s, 20 %), end within the last min(2 s, 25 %); pick the pair with the lowest mean |Δ|
+    sw = 160
+    th = even(sw * meta["h"] / meta["w"])
+    raw = ffmpeg("-i", str(clip), "-vf", f"scale={sw}:{th},format=gray", "-f", "rawvideo", "-", capture=True)
+    frames = np.frombuffer(raw, np.uint8)
+    frames = frames[: frames.size // (sw * th) * (sw * th)].reshape(-1, th, sw).astype(np.int16)
+    n = len(frames)
+    if n < fps * 3:
+        sys.exit("✗ idle-door clip is too short (need ≥ 3 s)")
+    s_max = max(1, min(int(1.5 * fps), int(n * 0.2)))
+    e_min = n - max(1, min(int(2.0 * fps), int(n * 0.25)))
+    best = (1e9, 0, n - 1)
+    for i in range(0, s_max):
+        for j in range(e_min, n):
+            d = float(np.abs(frames[i] - frames[j]).mean())
+            if d < best[0]:
+                best = (d, i, j)
+    diff, s0, e0 = best
+    N = e0 - s0  # frames s0 … e0-1: frame e0 ≈ frame s0, so the cut back to the start pose is seamless
+    print(f"• trim: frames {s0} → {e0} ({s0 / fps:.3f}s → {e0 / fps:.3f}s, {N / fps:.3f}s); start/end mean |Δ| = {diff:.2f} "
+          f"(consecutive-frame motion ≈ {float(np.mean([np.abs(frames[k + 1] - frames[k]).mean() for k in range(0, n - 1, 5)])):.2f})")
+    if diff > 6:
+        print("  ! the start and end poses differ noticeably — the cut back to idle may show a small jump")
+    # align on the first/last ~1 s only (he stands centred there); the walk-off may leave the box naturally
+    t_s, t_e = s0 / fps, e0 / fps
+    box, whiten, fr = match_framing(clip, meta, fr, args, [(t_s, min(t_s + 1.0, t_e)), (max(t_e - 1.0, t_s), t_e)])
+    tmp = Path(tempfile.mkdtemp(prefix="idle-door-"))
+    try:
+        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1"
+        veil = tmp / "veil.rgba"
+        has_veil = write_edge_veil(veil, box, meta["w"], int(fr.get("feather", args.feather)))
+        veil_in = ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{OUT_W}x{OUT_H}", "-i", str(veil)] if has_veil else []
+        still_fc = (f"[0:v]{still_chain}[s0];[s0][1:v]overlay=eof_action=repeat:format=auto,format=yuv420p[still]"
+                    if has_veil else f"[0:v]{still_chain},format=yuv420p[still]")
+        fc = f"{still_fc};[still]fps={meta['fps_str']}[v]"  # fps last (ffmpeg 7.1 colorlevels/pad bug)
+        video_tmp = tmp / "door.mkv"
+        ffmpeg("-ss", f"{s0 / fps}", "-i", str(clip), *veil_in, "-filter_complex", fc, "-map", "[v]",
+               "-frames:v", str(N), "-an", "-c:v", "ffv1", str(video_tmp))
+        mp4, webm, poster = out / "hero" / "idle-door.mp4", out / "hero" / "idle-door.webm", out / "hero" / "idle-door-poster.webp"
+        print("• encoding idle-door.mp4 / .webm (no audio track)")
+        ffmpeg("-i", str(video_tmp), "-map", "0:v", "-an", "-c:v", "libx264", "-crf", "24", "-preset", "slow",
+               "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(mp4))
+        ffmpeg("-i", str(video_tmp), "-map", "0:v", "-an", "-c:v", "libvpx-vp9", "-crf", "36", "-b:v", "0",
+               "-row-mt", "1", "-deadline", "good", "-pix_fmt", "yuv420p", str(webm))
+        make_poster(mp4, poster)
+        for f in (mp4, webm):
+            if probe(f)["audio"]:
+                sys.exit(f"✗ {f} has an audio track — expected none")
+        for f in (mp4, webm, poster):
+            print(f"✓ {f}  ({f.stat().st_size / 1024:.0f} KB)")
+        print("\nNext: set HERO_IDLE.door.enabled = true in src/lib/data.ts (needs the idle loop too)")
+    finally:
+        if args.keep_tmp:
+            print(f"(kept {tmp})")
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 def main() -> None:
@@ -604,6 +760,12 @@ def main() -> None:
     ap.add_argument("--answer", metavar="ID",
                     help="build an 'Ask me' answer clip from INPUT → public/hero/answers/ID.{mp4,webm} + ID-poster.webp "
                          f"(chip ids: {', '.join(ANSWER_IDS)})")
+    ap.add_argument("--idle", action="store_true",
+                    help="build the silent idle loop from INPUT → public/hero/idle.{mp4,webm} + idle-poster.webp "
+                         "(hero crop/align/whiten, audio stripped, seamless xfade loop; uses --start/--duration/--fade)")
+    ap.add_argument("--idle-door", action="store_true",
+                    help="build the silent idle variation (door walk) from INPUT → public/hero/idle-door.{mp4,webm} + "
+                         "idle-door-poster.webp (hero crop/align/whiten, no audio, trimmed to matching start/end frames)")
     ap.add_argument("--tail", type=float, default=None,
                     help="--answer: seconds kept after the speech ends (default = --lead); raise it to keep the silent "
                          "part where he settles back into the hands-in-pockets pose")
@@ -637,6 +799,18 @@ def main() -> None:
         if not args.input:
             sys.exit("✗ --answer needs the clip path, e.g. --answer who inputs/answers/who.mp4")
         build_answer(args.input, args.answer, out, args)
+        return
+
+    if args.idle_door:
+        if not args.input:
+            sys.exit("✗ --idle-door needs the clip path, e.g. --idle-door inputs/idle-door.mp4")
+        build_idle_door(args.input, out, args)
+        return
+
+    if args.idle:
+        if not args.input:
+            sys.exit("✗ --idle needs the clip path, e.g. --idle inputs/idle.mp4")
+        build_idle(args.input, out, args)
         return
 
     if args.portrait_only:

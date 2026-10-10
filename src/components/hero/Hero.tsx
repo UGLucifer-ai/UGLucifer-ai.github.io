@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { HERO, PROFILE, HAS, asset, answerClip } from "@/lib/data";
+import { HERO, HERO_IDLE, PROFILE, HAS, asset, answerClip } from "@/lib/data";
 import { getLenis } from "@/lib/scroll";
 import { prefersReducedMotion } from "@/lib/hooks";
 import Pill from "@/components/ui/Pill";
@@ -17,6 +17,12 @@ function splitRole(role: string): [string, string] {
 /** the mobile layout (hero fits one screen, Ask me docked at the bottom) */
 const MOBILE_MQ = "(max-width: 959px)";
 
+type Phase = "intro" | "answer" | "rest";
+type Layer = "loop" | "answer" | "idle" | "door";
+
+/** idle loops between door walks: 3–4, now and then 5 */
+const doorGap = () => 3 + Math.floor(Math.random() * 2) + (Math.random() < 0.15 ? 1 : 0);
+
 type ActiveClip = { id: string; cb: ClipCallbacks; srcs: string[]; tried: number; started: boolean; speech?: [number, number] };
 
 export default function Hero() {
@@ -24,15 +30,17 @@ export default function Hero() {
   const mediaRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const answerRef = useRef<HTMLVideoElement>(null);
+  const idleRef = useRef<HTMLVideoElement>(null);
+  const doorRef = useRef<HTMLVideoElement>(null);
   const [soundOn, setSoundOn] = useState(false);
   const [blocked, setBlocked] = useState(false);
-  const [answering, setAnswering] = useState(false);
+  const [phase, setPhase] = useState<Phase>("intro");
+  const [layer, setLayer] = useState<Layer>("loop");
+  const answering = phase === "answer";
   const visibleRef = useRef(true);
   const userMutedRef = useRef(false);
   const justUnlockedRef = useRef(false);
   const clipRef = useRef<ActiveClip | null>(null);
-  /** the intro loop is held (paused) underneath a playing answer clip */
-  const loopHeldRef = useRef(false);
   /** visibility pausing is suspended while we scroll the hero into view / the visitor types a question */
   const holdUntilRef = useRef(0);
   const typingHoldRef = useRef(false);
@@ -40,17 +48,78 @@ export default function Hero() {
 
   const [lead, accent] = splitRole(PROFILE.role || PROFILE.name);
 
+  /* ───────────── playback state machine ─────────────
+     intro  – the talking intro loop (muted autoplay; with sound once the visitor allows it)
+     answer – a lip-synced answer clip, stacked over the loop (the loop is paused + muted under it)
+     rest   – after an answer (or a typed question): he no longer talks. The silent idle loop plays muted
+              (HERO_IDLE, when built), else he holds still on the answer's last frame / the intro's first frame.
+              Only the sound button (▶ = replay the intro with sound) or another question leaves rest.
+     Invariants: at most one element is unmuted, and only the active one may play (enforced on every play/
+     volume change and when the tab comes back); nothing but the sound button restarts the intro after an answer. */
+  const phaseRef = useRef<Phase>("intro");
+  const layerRef = useRef<Layer>("loop");
+  const restKindRef = useRef<"ended" | "stopped">("ended");
+  const idleFailedRef = useRef(false);
+  const doorFailedRef = useRef(false);
+  /** a door walk was started (a looping idle fires 'playing' again at every wrap — that must not cancel it) */
+  const doorPendingRef = useRef(false);
+  const idleLoopsRef = useRef({ n: 0, gap: doorGap(), lastT: 0 });
+
+  const go = useCallback((p: Phase) => {
+    phaseRef.current = p;
+    setPhase(p);
+    const v = videoRef.current;
+    if (v) v.loop = p === "intro"; // never a looping talker outside the intro
+  }, []);
+  const show = useCallback((l: Layer) => {
+    layerRef.current = l;
+    setLayer(l);
+  }, []);
+
+  const els = () => [videoRef.current, answerRef.current, idleRef.current, doorRef.current].filter(Boolean) as HTMLVideoElement[];
+  const activeEl = () => {
+    const p = phaseRef.current;
+    if (p === "intro") return videoRef.current;
+    if (p === "answer") return clipRef.current ? answerRef.current : null;
+    return null; // rest: nothing has sound
+  };
+  /** may this element be playing right now? */
+  const mayPlay = (el: HTMLVideoElement) => {
+    const p = phaseRef.current;
+    if (el === videoRef.current) return p === "intro" || (p === "answer" && layerRef.current === "loop"); // keeps moving until the clip is up
+    if (el === answerRef.current) return p === "answer" && !!clipRef.current;
+    if (el === idleRef.current) return p === "rest" || (p === "answer" && layerRef.current === "idle");
+    if (el === doorRef.current) return p === "rest";
+    return false;
+  };
+  /** pause anything that shouldn't play and mute everything but the active element */
+  const enforce = useCallback(() => {
+    const act = activeEl();
+    for (const el of els()) {
+      if (el !== act && !el.muted) el.muted = true;
+      if (!el.paused && !mayPlay(el)) el.pause();
+    }
+  }, []);
+
   const tryPlay = useCallback(async (withSound: boolean) => {
     const v = videoRef.current;
-    if (!v || clipRef.current) return;
+    if (!v || phaseRef.current !== "intro") return;
     v.muted = !withSound;
+    const stale = () => {
+      // a question was asked while play() was pending: the intro must not come back
+      if (phaseRef.current === "intro") return false;
+      v.muted = true;
+      if (!mayPlay(v)) v.pause();
+      return true;
+    };
     try {
       await v.play();
+      if (stale()) return;
       setSoundOn(withSound);
       if (withSound) setBlocked(false);
     } catch (err) {
+      if (stale()) return;
       if ((err as DOMException)?.name === "AbortError") {
-        // play() interrupted by a pause (e.g. an answer clip started) — not an autoplay block
         setSoundOn(!v.muted);
         if (!v.muted) setBlocked(false);
         return;
@@ -62,6 +131,7 @@ export default function Hero() {
         setBlocked(true);
         try {
           await v.play();
+          stale();
         } catch {
           /* fully blocked (e.g. data saver) — leave poster */
         }
@@ -69,16 +139,17 @@ export default function Hero() {
     }
   }, []);
 
-  // 1) try to start with sound, 2) unlock on first interaction
+  // 1) try to start with sound, 2) unlock the intro's sound on the first interaction — but not when that
+  //    interaction is with Ask me (a chip, the input, the Ask button…) or after any question: he must not
+  //    start talking the intro over (or after) an answer.
   useEffect(() => {
     if (!HERO.enabled) return;
     tryPlay(true);
     const unlock = (e: Event) => {
       const v = videoRef.current;
-      if (!v || userMutedRef.current || !v.muted) return cleanup();
-      // a chip with an answer clip is about to play that clip with sound — don't let the intro talk first
+      if (!v || userMutedRef.current || !v.muted || phaseRef.current !== "intro") return cleanup();
       const t = (e.type === "keydown" ? document.activeElement : e.target) as Element | null;
-      if (t?.closest?.("[data-clip]")) return cleanup();
+      if (t?.closest?.(".askme, [data-clip]")) return cleanup();
       justUnlockedRef.current = true;
       setTimeout(() => (justUnlockedRef.current = false), 400);
       if (visibleRef.current) tryPlay(true);
@@ -95,24 +166,129 @@ export default function Hero() {
     return cleanup;
   }, [tryPlay]);
 
-  // 3) pause when < 35 % of the hero is visible, resume when back (the answer clip if one is playing, else the loop).
-  //    Pausing is skipped while held (a programmatic scroll back to the hero, or the mobile keyboard is up).
-  const isHeld = () => typingHoldRef.current || performance.now() < holdUntilRef.current;
-  const applyVisibility = useCallback((ratio: number) => {
+  /* ── idle loop (optional) ── */
+  const idleUsable = () => HERO_IDLE.enabled && !!idleRef.current && !idleFailedRef.current;
+  const primeIdle = useCallback(() => {
+    const i = idleRef.current;
+    if (!i || !HERO_IDLE.enabled || idleFailedRef.current || i.getAttribute("src")) return;
+    i.muted = true;
+    i.preload = "auto";
+    const webm = i.canPlayType('video/webm; codecs="vp9"') === "probably";
+    i.src = asset(webm ? HERO_IDLE.webm : HERO_IDLE.mp4);
+  }, []);
+
+  const primeDoor = useCallback(() => {
+    const d = doorRef.current;
+    if (!d || !HERO_IDLE.door.enabled || doorFailedRef.current || d.getAttribute("src")) return;
+    d.muted = true;
+    d.preload = "auto";
+    const webm = d.canPlayType('video/webm; codecs="vp9"') === "probably";
+    d.src = asset(webm ? HERO_IDLE.door.webm : HERO_IDLE.door.mp4);
+  }, []);
+
+  /** freeze fallback for a rest that didn't come from a finished clip: the intro's first frame (= hero poster) */
+  const showPosterStill = useCallback(() => {
+    const a = answerRef.current;
+    if (!a) return;
+    a.pause();
+    a.muted = true;
+    a.removeAttribute("src");
+    a.poster = HERO.poster ? asset(HERO.poster) : "";
+    a.load();
+    show("answer");
+  }, [show]);
+
+  const playIdle = useCallback(() => {
+    const i = idleRef.current;
+    if (!i || !idleUsable() || !visibleRef.current) return;
+    const d = doorRef.current;
+    if (layerRef.current === "door" && d && !doorFailedRef.current) {
+      d.play().catch(() => {}); // resume a door walk that was paused by scrolling away
+      return;
+    }
+    primeIdle();
+    i.muted = true;
+    i.play().catch(() => {});
+  }, [primeIdle]);
+
+  /** after an answer ends (or a typed/text-only question): stop talking, idle or hold still */
+  const enterRest = useCallback(
+    (kind: "ended" | "stopped") => {
+      const v = videoRef.current;
+      const a = answerRef.current;
+      clipRef.current = null;
+      restKindRef.current = kind;
+      idleLoopsRef.current = { n: 0, gap: doorGap(), lastT: 0 };
+      doorPendingRef.current = false;
+      doorRef.current?.pause();
+      go("rest");
+      setSoundOn(false);
+      setBlocked(false);
+      a?.pause();
+      if (a) a.muted = true;
+      if (v) {
+        v.pause();
+        v.muted = true;
+        try {
+          v.currentTime = 0; // the relaxed first frame, ready for ▶
+        } catch {
+          /* not seekable yet */
+        }
+      }
+      enforce();
+      if (idleUsable()) {
+        playIdle(); // crossfades in on 'playing'; until then the current frame holds still
+        if (kind === "stopped" && layerRef.current === "loop" && !visibleRef.current) showPosterStill();
+      } else if (kind === "stopped" && !(layerRef.current === "answer" && a?.ended)) showPosterStill();
+      // kind "ended" without idle: the answer layer stays up, paused on its last frame (hands in pockets)
+    },
+    [enforce, go, playIdle, showPosterStill],
+  );
+
+  /** ▶ after an answer: back to the intro from its first frame, with sound (called inside the click) */
+  const replayIntro = useCallback(() => {
     const v = videoRef.current;
     const a = answerRef.current;
+    const i = idleRef.current;
     if (!v) return;
+    clipRef.current = null;
+    go("intro");
+    show("loop");
+    a?.pause();
+    i?.pause();
+    doorRef.current?.pause();
+    try {
+      v.currentTime = 0;
+    } catch {
+      /* not seekable yet */
+    }
+    tryPlay(true);
+    const done = a?.getAttribute("src");
+    setTimeout(() => {
+      if (!a || !done || phaseRef.current !== "intro" || a.getAttribute("src") !== done) return;
+      a.removeAttribute("src");
+      a.load();
+    }, 400);
+  }, [go, show, tryPlay]);
+
+  // 3) pause when < 35 % of the hero is visible, resume the ACTIVE element when back (intro / answer / idle —
+  //    never the talking intro after an answer). Pausing is skipped while held (a programmatic scroll back to
+  //    the hero, or the mobile keyboard is up).
+  const applyVisibility = useCallback((ratio: number) => {
     const vis = ratio >= 0.35;
     if (!vis && (typingHoldRef.current || performance.now() < holdUntilRef.current)) return;
     visibleRef.current = vis;
-    if (vis) {
-      if (clipRef.current) a?.play().catch(() => {});
-      else if (!loopHeldRef.current) v.play().catch(() => {});
-    } else {
-      v.pause();
-      a?.pause();
+    const v = videoRef.current;
+    const a = answerRef.current;
+    if (!vis) {
+      els().forEach((el) => el.pause());
+      return;
     }
-  }, []);
+    const p = phaseRef.current;
+    if (p === "intro") v?.play().catch(() => {});
+    else if (p === "answer" && clipRef.current) a?.play().catch(() => {});
+    else if (p === "rest") playIdle();
+  }, [playIdle]);
 
   useEffect(() => {
     if (!HERO.enabled) return;
@@ -129,11 +305,32 @@ export default function Hero() {
     return () => io.disconnect();
   }, [applyVisibility]);
 
+  // guards: any play/volume change (browser resume, media keys, lock-screen controls…) and tab return re-check the rules
+  useEffect(() => {
+    const list = els();
+    const onVis = () => document.visibilityState === "visible" && enforce();
+    list.forEach((el) => {
+      el.addEventListener("play", enforce);
+      el.addEventListener("volumechange", enforce);
+    });
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      list.forEach((el) => {
+        el.removeEventListener("play", enforce);
+        el.removeEventListener("volumechange", enforce);
+      });
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [enforce]);
+
   /** suspend visibility pausing for `ms`, then re-check against the latest ratio */
   const holdFor = useCallback(
     (ms: number) => {
       holdUntilRef.current = Math.max(holdUntilRef.current, performance.now() + ms);
-      setTimeout(() => !isHeld() && applyVisibility(lastRatioRef.current), ms + 30);
+      setTimeout(() => {
+        if (typingHoldRef.current || performance.now() < holdUntilRef.current) return;
+        applyVisibility(lastRatioRef.current);
+      }, ms + 30);
     },
     [applyVisibility],
   );
@@ -174,42 +371,13 @@ export default function Hero() {
     return () => ro.disconnect();
   }, []);
 
-  /* ───────────── answer clips (second, stacked <video>; crossfades over the loop) ───────────── */
+  /* ───────────── answer clips (stacked <video>s crossfading over the loop) ───────────── */
 
-  /** Back to the intro loop: from its first frame (the same relaxed pose the clips end in), muted. */
-  const releaseLoop = useCallback(() => {
-    const v = videoRef.current;
-    setAnswering(false);
-    if (!v || !loopHeldRef.current) return;
-    loopHeldRef.current = false;
-    v.muted = true;
-    setSoundOn(false);
-    try {
-      v.currentTime = 0;
-    } catch {
-      /* not seekable yet */
-    }
-    if (visibleRef.current) v.play().catch(() => {});
-  }, []);
-
-  const clearAnswer = useCallback(() => {
-    const a = answerRef.current;
-    clipRef.current = null;
-    if (!a) return;
-    a.pause();
-    // keep the last frame on screen while the layer fades out, then free the decoder
-    setTimeout(() => {
-      if (clipRef.current || !a.getAttribute("src")) return;
-      a.removeAttribute("src");
-      a.load();
-    }, 400);
-  }, []);
-
+  /** typed / text-only question: he stops talking (rest) — the loop never keeps moving its lips under a text answer */
   const stopAnswer = useCallback(() => {
-    if (!clipRef.current) return;
-    clearAnswer();
-    releaseLoop();
-  }, [clearAnswer, releaseLoop]);
+    if (phaseRef.current === "rest") return enforce();
+    enterRest("stopped");
+  }, [enforce, enterRest]);
 
   const startClip = useCallback(() => {
     const a = answerRef.current;
@@ -233,13 +401,19 @@ export default function Hero() {
     (id: string, cb: ClipCallbacks): boolean => {
       const clip = answerClip(id);
       const a = answerRef.current;
-      if (!clip || !a || !videoRef.current) {
-        stopAnswer(); // text-only answer: leave (or return to) the intro loop
+      const v = videoRef.current;
+      if (!clip || !a || !v) {
+        stopAnswer(); // text-only answer
         return false;
       }
       const webmFirst = a.canPlayType('video/webm; codecs="vp9, opus"') === "probably";
       const srcs = (webmFirst ? [clip.webm, clip.mp4] : [clip.mp4, clip.webm]).map(asset);
       clipRef.current = { id, cb, srcs, tried: 0, started: false, speech: clip.speech };
+      go("answer");
+      v.muted = true; // one voice: the intro goes quiet the moment a question is asked
+      if (layerRef.current !== "loop") v.pause();
+      enforce();
+      primeIdle(); // so the idle loop is ready the moment this answer ends
       // the chip click is a user gesture: play with sound unless the visitor explicitly muted
       a.muted = userMutedRef.current;
       a.poster = asset(clip.poster);
@@ -247,7 +421,7 @@ export default function Hero() {
       startClip();
       return true;
     },
-    [startClip, stopAnswer],
+    [enforce, go, primeIdle, startClip, stopAnswer],
   );
 
   // answer <video> events
@@ -256,25 +430,24 @@ export default function Hero() {
     if (!a) return;
     const onPlaying = () => {
       const clip = clipRef.current;
-      if (!clip) return;
+      if (!clip || phaseRef.current !== "answer") return;
       setSoundOn(!a.muted);
       if (!a.muted) setBlocked(false);
       if (clip.started) return;
       clip.started = true;
-      const v = videoRef.current;
-      if (v && !loopHeldRef.current) {
-        loopHeldRef.current = true;
-        v.pause(); // the intro's own voice must not talk over the answer
-      }
-      setAnswering(true);
+      show("answer");
+      enforce(); // the loop / idle underneath stop now that the clip is on screen
       clip.cb.onStart(() => (a.duration > 0 && Number.isFinite(a.duration) ? a.currentTime / a.duration : 0), a.duration, clip.speech);
     };
-    const onEnded = () => {
+    const finish = () => {
       const clip = clipRef.current;
-      if (!clip) return;
-      clearAnswer();
-      releaseLoop();
+      if (!clip || !clip.started) return;
+      enterRest("ended");
       clip.cb.onEnd();
+    };
+    // 'ended' can be skipped by some mobile browsers when the last frame is short: treat "paused at the end" the same
+    const onPauseOrTime = () => {
+      if (Number.isFinite(a.duration) && a.duration > 0 && a.currentTime >= a.duration - 0.05 && (a.paused || a.ended)) finish();
     };
     const onError = () => {
       const clip = clipRef.current;
@@ -285,24 +458,142 @@ export default function Hero() {
         startClip();
         return;
       }
-      // clip missing/undecodable → text-only
-      clearAnswer();
-      releaseLoop();
+      // clip missing/undecodable → text-only, and he stops talking
+      enterRest("stopped");
       clip.cb.onFail();
     };
     a.addEventListener("playing", onPlaying);
-    a.addEventListener("ended", onEnded);
+    a.addEventListener("ended", finish);
+    a.addEventListener("pause", onPauseOrTime);
+    a.addEventListener("timeupdate", onPauseOrTime);
     a.addEventListener("error", onError);
     return () => {
       a.removeEventListener("playing", onPlaying);
-      a.removeEventListener("ended", onEnded);
+      a.removeEventListener("ended", finish);
+      a.removeEventListener("pause", onPauseOrTime);
+      a.removeEventListener("timeupdate", onPauseOrTime);
       a.removeEventListener("error", onError);
     };
-  }, [clearAnswer, releaseLoop, startClip]);
+  }, [enforce, enterRest, show, startClip]);
+
+  // idle <video> events: crossfade in once it's actually playing; on failure fall back to holding still
+  useEffect(() => {
+    const i = idleRef.current;
+    if (!i) return;
+    let tried = 0;
+    const onPlaying = () => {
+      if (phaseRef.current !== "rest" || doorPendingRef.current) return;
+      show("idle");
+      doorRef.current?.pause();
+      // free the finished answer's decoder once the dissolve is over — only that clip, and only if he's still resting
+      // (a question asked within these 400 ms has already put a new clip in this element)
+      const a = answerRef.current;
+      const done = a?.getAttribute("src");
+      setTimeout(() => {
+        if (!a || !done || phaseRef.current !== "rest" || layerRef.current !== "idle" || a.getAttribute("src") !== done) return;
+        a.removeAttribute("src");
+        a.load();
+      }, 400);
+    };
+    const onError = () => {
+      if (!i.getAttribute("src")) return;
+      if (tried++ === 0) {
+        const webm = i.currentSrc.includes(".webm") || (i.getAttribute("src") || "").includes(".webm");
+        i.src = asset(webm ? HERO_IDLE.mp4 : HERO_IDLE.webm);
+        if (phaseRef.current === "rest") playIdle();
+        return;
+      }
+      idleFailedRef.current = true;
+      i.removeAttribute("src");
+      if (phaseRef.current === "rest" && layerRef.current !== "answer") showPosterStill();
+      else if (phaseRef.current === "rest" && restKindRef.current === "stopped" && !answerRef.current?.ended) showPosterStill();
+    };
+    // count idle loops (currentTime wraps back to ~0); every few loops, walk through the door once
+    const onTime = () => {
+      const c = idleLoopsRef.current;
+      const t = i.currentTime;
+      if (t + 0.5 < c.lastT && phaseRef.current === "rest" && layerRef.current === "idle") {
+        c.n++;
+        const d = doorRef.current;
+        if (d && HERO_IDLE.door.enabled && !doorFailedRef.current && !prefersReducedMotion()) {
+          if (c.n >= c.gap - 1) primeDoor(); // load it one loop ahead
+          if (c.n >= c.gap && d.readyState >= 3 && visibleRef.current) {
+            c.n = 0;
+            c.gap = doorGap();
+            doorPendingRef.current = true;
+            d.muted = true;
+            d.currentTime = 0;
+            d.play().catch(() => (doorPendingRef.current = false));
+          }
+        }
+      }
+      c.lastT = t;
+    };
+    i.addEventListener("playing", onPlaying);
+    i.addEventListener("error", onError);
+    i.addEventListener("timeupdate", onTime);
+    return () => {
+      i.removeEventListener("playing", onPlaying);
+      i.removeEventListener("error", onError);
+      i.removeEventListener("timeupdate", onTime);
+    };
+  }, [playIdle, primeDoor, show, showPosterStill]);
+
+  // door <video> events: cut to it when it starts (it opens on the idle pose), back to the idle loop when done
+  useEffect(() => {
+    const d = doorRef.current;
+    if (!d) return;
+    let tried = 0;
+    const backToIdle = () => {
+      const i = idleRef.current;
+      doorPendingRef.current = false;
+      d.pause();
+      if (phaseRef.current !== "rest" || !i) return;
+      try {
+        i.currentTime = 0;
+      } catch {
+        /* not seekable */
+      }
+      idleLoopsRef.current.lastT = 0;
+      if (visibleRef.current) i.play().catch(() => {}); // 'playing' → show("idle")
+      else show("idle");
+    };
+    const onPlaying = () => {
+      if (phaseRef.current !== "rest") return d.pause();
+      doorPendingRef.current = false;
+      show("door");
+      idleRef.current?.pause();
+    };
+    const onError = () => {
+      if (!d.getAttribute("src")) return;
+      if (tried++ === 0) {
+        const webm = (d.getAttribute("src") || "").includes(".webm");
+        d.src = asset(webm ? HERO_IDLE.door.mp4 : HERO_IDLE.door.webm);
+        return;
+      }
+      doorFailedRef.current = true;
+      d.removeAttribute("src");
+      if (layerRef.current === "door") backToIdle();
+    };
+    d.addEventListener("playing", onPlaying);
+    d.addEventListener("ended", backToIdle);
+    d.addEventListener("error", onError);
+    return () => {
+      d.removeEventListener("playing", onPlaying);
+      d.removeEventListener("ended", backToIdle);
+      d.removeEventListener("error", onError);
+    };
+  }, [show]);
 
   const toggleSound = () => {
     if (justUnlockedRef.current) return; // this same click already unlocked sound
-    const v = clipRef.current ? answerRef.current : videoRef.current;
+    const p = phaseRef.current;
+    if (p === "rest") {
+      userMutedRef.current = false;
+      replayIntro(); // ▶ after an answer replays the intro, with sound
+      return;
+    }
+    const v = p === "answer" && clipRef.current ? answerRef.current : videoRef.current;
     if (!v) return;
     if (soundOn) {
       v.muted = true;
@@ -310,7 +601,7 @@ export default function Hero() {
       setSoundOn(false);
     } else {
       userMutedRef.current = false;
-      if (clipRef.current) {
+      if (p === "answer" && clipRef.current) {
         v.muted = false;
         setSoundOn(true);
         setBlocked(false);
@@ -328,7 +619,14 @@ export default function Hero() {
   ].filter(Boolean) as { href: string; label: string; primary?: boolean; download?: boolean }[];
 
   return (
-    <section id="top" ref={sectionRef} className={`hero ${HERO.enabled ? "" : "hero--novideo"}`} aria-labelledby="hero-title">
+    <section
+      id="top"
+      ref={sectionRef}
+      className={`hero ${HERO.enabled ? "" : "hero--novideo"}`}
+      aria-labelledby="hero-title"
+      data-phase={phase}
+      data-layer={layer}
+    >
       <p className="hero-ghost" aria-hidden="true">
         {PROFILE.firstName.toUpperCase()}
       </p>
@@ -338,9 +636,9 @@ export default function Hero() {
           <div className="hero-halo" aria-hidden="true" />
           <video
             ref={videoRef}
-            className={`hero-video ${answering ? "is-under" : ""}`}
+            className={`hero-video ${layer !== "loop" ? "is-under" : ""}`}
             muted
-            loop
+            loop={phase === "intro"}
             playsInline
             preload="auto"
             poster={HERO.poster ? asset(HERO.poster) : undefined}
@@ -349,12 +647,35 @@ export default function Hero() {
             <source src={asset(HERO.webm)} type="video/webm" />
             <source src={asset(HERO.mp4)} type="video/mp4" />
           </video>
+          {HERO_IDLE.enabled && (
+            <video
+              ref={idleRef}
+              className={`hero-video hero-answer hero-idle ${layer === "idle" ? "is-on" : ""}`}
+              muted
+              loop
+              playsInline
+              preload="none"
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+          )}
+          {HERO_IDLE.enabled && HERO_IDLE.door.enabled && (
+            <video
+              ref={doorRef}
+              className={`hero-video hero-answer hero-idle ${layer === "door" ? "is-on" : ""}`}
+              muted
+              playsInline
+              preload="none"
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+          )}
           <video
             ref={answerRef}
-            className={`hero-video hero-answer ${answering ? "is-on" : ""}`}
+            className={`hero-video hero-answer ${layer === "answer" ? "is-on" : ""}`}
             playsInline
             preload="none"
-            aria-hidden={!answering}
+            aria-hidden={layer !== "answer"}
             tabIndex={-1}
           />
           <button
@@ -418,6 +739,8 @@ export default function Hero() {
         /* answer clip: stacked over the loop with the same box/crop, crossfaded in/out (heroRise fills backwards only, so opacity stays transitionable) */
         .hero-answer{position:absolute;inset:0;opacity:0;animation:none;pointer-events:none;transition:opacity .28s var(--ease)}
         .hero-answer.is-on{opacity:1}
+        /* idle ↔ door ↔ answer are different takes (hands at his sides vs in pockets): a slightly longer dissolve */
+        .hero-idle{transition:opacity .45s var(--ease)}
         .hero-video.is-under{opacity:0}
         @media (prefers-reduced-motion: reduce){.hero-video{transition:none}}
         .hero-sound{position:absolute;right:6%;bottom:22%;width:46px;height:46px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;transition:transform .5s var(--ease)}

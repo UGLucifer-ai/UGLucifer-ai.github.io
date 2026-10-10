@@ -220,6 +220,36 @@ export const HERO: HeroMedia = {
   poster: "/hero/hero-poster.webp", // frame 0 of hero.mp4 (build-hero-assets.py), so playback starts without a jump
 };
 
+/**
+ * Optional silent idle loop shown (muted, looping) after an answer ends — he waits without talking.
+ * Build it with `scripts/build-hero-assets.py --idle inputs/idle.mp4` (→ public/hero/idle.{webm,mp4} +
+ * idle-poster.webp, no audio track), then set enabled: true. While disabled (or if it fails to load) the
+ * character holds still on the answer's last frame instead.
+ */
+export const HERO_IDLE: {
+  enabled: boolean;
+  webm: string;
+  mp4: string;
+  poster: string;
+  /**
+   * Optional idle variation: a silent ~8 s clip where he steps through a soft white door behind him and comes back
+   * to the starting pose. Played once every ~3–4 idle loops (randomised), then back to the idle loop. Needs the idle
+   * loop. Build: `scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4` (→ public/hero/idle-door.*).
+   */
+  door: { enabled: boolean; webm: string; mp4: string; poster: string };
+} = {
+  enabled: true, // inputs/idle.mp4 (Flow idleA), mouth-still 3.542–7.792 s, 0.5 s xfade loop (3.71 s), no audio track
+  webm: "/hero/idle.webm",
+  mp4: "/hero/idle.mp4",
+  poster: "/hero/idle-poster.webp",
+  door: {
+    enabled: true, // inputs/idle-door.mp4 (Flow idleB), trimmed 0.29–8.67 s, --whiten-max 0.80 (clears the door set's wall/floor shading), no audio track
+    webm: "/hero/idle-door.webm",
+    mp4: "/hero/idle-door.mp4",
+    poster: "/hero/idle-door-poster.webp",
+  },
+};
+
 /** Suggested "Ask me" chips that can have a lip-synced answer clip. */
 export type AnswerClipId = "who" | "whatdo" | "current" | "kubernetes" | "aws" | "cicd" | "tools" | "contact" | "resume";
 export type AnswerClip = { webm: string; mp4: string; poster: string; speech?: [number, number] };
