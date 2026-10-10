@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { flushSync } from "react-dom";
 import { useReducedMotion } from "@/lib/hooks";
 import { scrollToTarget } from "@/lib/scroll";
 import type { Answer, AskLink } from "@/lib/askme";
@@ -39,7 +40,13 @@ export type AskMeHero = {
   playAnswer: (id: string, cb: ClipCallbacks) => boolean;
   /** stop any answer clip and return to the intro loop */
   stopAnswer: () => void;
+  /** mobile safety net: scroll the character back into view if it's mostly off screen */
+  reveal: () => void;
+  /** the mobile keyboard is up (true) / closing (false): don't pause the hero for the viewport jump */
+  holdForTyping: (on: boolean) => void;
 };
+
+const isMobile = () => typeof window !== "undefined" && window.matchMedia("(max-width: 959px)").matches;
 
 /** "type" = typing reveal; "wait" = clip loading; "clip" = caption follows the clip; "full" = all shown */
 type Mode = "type" | "wait" | "clip" | "full";
@@ -49,7 +56,11 @@ const LEAD = 0.2; // seconds of silence kept before/after speech in each clip (b
 export default function AskMe({ hero }: { hero: AskMeHero }) {
   const reduced = useReducedMotion();
   const uid = useId();
-  const [open, setOpen] = useState(false); // mobile pill
+  const [typing, setTyping] = useState(false); // mobile: the input replaces the chip row
+  const [activeChip, setActiveChip] = useState<string | null>(null);
+  const [edges, setEdges] = useState({ start: true, end: false }); // chip row fades
+  const inputRef = useRef<HTMLInputElement>(null);
+  const rowRef = useRef<HTMLUListElement>(null);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<Answer | null>(null);
   const [shown, setShown] = useState(GREETING.length);
@@ -71,6 +82,10 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
   const respond = useCallback(async (q: string, id?: string) => {
     const token = ++tokenRef.current;
     progressRef.current = null;
+    setActiveChip(id ?? null);
+    // a tap on a chip: bring the character back first if he's mostly scrolled away (typed: after the keyboard closes)
+    if (id) heroRef.current.reveal();
+    else setTimeout(() => heroRef.current.reveal(), 350);
     let m: Mode = "type";
     let loaded = false;
     if (id) {
@@ -149,6 +164,50 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
     if (!q) return;
     setInput("");
     respond(q.slice(0, 160));
+    if (isMobile()) {
+      // close the keyboard so the whole hero (character + caption) is back on screen
+      inputRef.current?.blur();
+      setTyping(false);
+    }
+  };
+
+  const openTyping = () => {
+    // render the input synchronously so focus() stays inside the tap (iOS only opens the keyboard then)
+    flushSync(() => setTyping(true));
+    inputRef.current?.focus();
+  };
+
+  const closeTypingIfEmpty = () => {
+    setTimeout(() => {
+      if (document.activeElement !== inputRef.current && !inputRef.current?.value) setTyping(false);
+    }, 160);
+  };
+
+  // chip row: edge fades only where there's more to scroll
+  const onRowScroll = () => {
+    const r = rowRef.current;
+    if (!r) return;
+    const start = r.scrollLeft <= 2;
+    const end = r.scrollLeft + r.clientWidth >= r.scrollWidth - 2;
+    setEdges((e) => (e.start === start && e.end === end ? e : { start, end }));
+  };
+  useEffect(() => {
+    onRowScroll();
+    window.addEventListener("resize", onRowScroll);
+    return () => window.removeEventListener("resize", onRowScroll);
+  }, [typing]);
+
+  const onChip = (c: { q: string; id: string }, el: HTMLElement) => {
+    respond(c.q, c.id);
+    const r = rowRef.current;
+    if (r && isMobile() && r.scrollWidth > r.clientWidth) {
+      // keep the tapped chip fully in the row (without scrolling the page)
+      const li = el.parentElement as HTMLElement;
+      const left = li.offsetLeft - 16;
+      const right = li.offsetLeft + li.offsetWidth - r.clientWidth + 24;
+      const to = r.scrollLeft > left ? left : r.scrollLeft < right ? right : r.scrollLeft;
+      if (to !== r.scrollLeft) r.scrollTo({ left: to, behavior: reduced ? "auto" : "smooth" });
+    }
   };
 
   const linkProps = (l: AskLink) => ({
@@ -167,16 +226,15 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
   const bodyId = `${uid}-body`;
   const inputId = `${uid}-input`;
   const titleId = `${uid}-title`;
+  const formId = `${uid}-form`;
 
   return (
-    <aside className={`askme ${open ? "is-open" : ""}`} aria-labelledby={titleId} onPointerEnter={() => loadKB()} onFocus={() => loadKB()}>
-      <button type="button" className="askme-pill" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen((o) => !o)}>
-        <span className="askme-dot" aria-hidden="true" />
-        Ask me
-        <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" className="askme-chev">
-          <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      </button>
+    <aside
+      className={`askme ${typing ? "is-typing" : ""} ${mode === "clip" || mode === "wait" ? "is-playing" : ""}`}
+      aria-labelledby={titleId}
+      onPointerEnter={() => loadKB()}
+      onFocus={() => loadKB()}
+    >
       <div id={bodyId} className="askme-body">
         <div className="askme-bubble">
           <div className="askme-scroll">
@@ -204,41 +262,82 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
             Ask me · from my résumé
           </p>
         </div>
-        <ul className="askme-chips">
-          {CHIPS.map((c) => (
-            <li key={c.id}>
-              <button type="button" className="askme-chip" data-clip={hero.hasClip(c.id) ? "" : undefined} onClick={() => respond(c.q, c.id)}>
-                {c.q}
-              </button>
-            </li>
-          ))}
-        </ul>
-        <form className="askme-form" onSubmit={onSubmit}>
-          <label htmlFor={inputId} className="sr-only">
-            Ask me a question about my résumé
-          </label>
-          <input
-            id={inputId}
-            className="askme-input"
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about my experience…"
-            maxLength={160}
-            autoComplete="off"
-            enterKeyHint="send"
-          />
-          <button type="submit" className="askme-send" aria-label="Ask">
+        <div className="askme-dock">
+          <button type="button" className="askme-ask" aria-expanded={typing} aria-controls={formId} onClick={openTyping}>
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-              <path d="M3 8h9M8.5 4.5L12 8l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
             </svg>
+            Ask
           </button>
-        </form>
+          <ul ref={rowRef} className={`askme-chips ${edges.start ? "" : "fade-l"} ${edges.end ? "" : "fade-r"}`} onScroll={onRowScroll}>
+            {CHIPS.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  className={`askme-chip ${activeChip === c.id ? "is-active" : ""}`}
+                  data-clip={hero.hasClip(c.id) ? "" : undefined}
+                  onClick={(e) => onChip(c, e.currentTarget)}
+                >
+                  {c.q}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <form id={formId} className="askme-form" onSubmit={onSubmit}>
+            <label htmlFor={inputId} className="sr-only">
+              Ask me a question about my résumé
+            </label>
+            <input
+              ref={inputRef}
+              id={inputId}
+              className="askme-input"
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onFocus={() => isMobile() && heroRef.current.holdForTyping(true)}
+              onBlur={() => {
+                if (!isMobile()) return;
+                heroRef.current.holdForTyping(false);
+                closeTypingIfEmpty();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && typing) {
+                  setInput("");
+                  inputRef.current?.blur();
+                  setTyping(false);
+                }
+              }}
+              placeholder="Ask about my experience…"
+              maxLength={160}
+              autoComplete="off"
+              enterKeyHint="send"
+            />
+            <button type="submit" className="askme-send" aria-label="Ask">
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <path d="M3 8h9M8.5 4.5L12 8l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="askme-close"
+              aria-label="Back to suggested questions"
+              onClick={() => {
+                setInput("");
+                setTyping(false);
+              }}
+            >
+              <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+            </button>
+          </form>
+        </div>
       </div>
 
       <style>{`
         .askme{position:absolute;z-index:3;right:max(var(--gutter),3vw);top:clamp(92px,12svh,150px);width:clamp(280px,25vw,360px);display:flex;flex-direction:column;max-height:calc(78svh - 62px - clamp(92px,12svh,150px))}
-        .askme-pill{display:none}
+        .askme-dock{display:contents}
+        .askme-ask,.askme-close{display:none}
         .askme-body{display:flex;flex-direction:column;gap:12px;min-height:0;flex:1 1 auto}
         .askme-body>*{flex:none}
         .askme-body>.askme-bubble{position:relative;background:var(--card);border-radius:20px;box-shadow:var(--shadow-hair),var(--shadow-soft);flex:0 1 auto;min-height:96px;display:flex;flex-direction:column}
@@ -265,15 +364,34 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
         .askme :focus-visible{outline:2px solid var(--ink);outline-offset:2px}
         .askme .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
         @media (max-width: 959px){
-          .askme{position:relative;z-index:2;right:auto;top:auto;width:auto;max-width:560px;max-height:none;margin:4px var(--gutter) 28px;align-self:stretch}
-          .askme-pill{display:inline-flex;align-self:flex-start;align-items:center;gap:8px;font-size:14px;font-weight:600;padding:10px 16px;border-radius:999px;background:var(--ink);color:#fff}
-          .askme-dot{width:7px;height:7px;border-radius:50%;background:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.25)}
-          .askme-chev{transition:transform .4s var(--ease)}
-          .askme.is-open .askme-chev{transform:rotate(180deg)}
-          .askme-body{display:none;margin-top:14px}
-          .askme.is-open .askme-body{display:flex}
-          .askme-scroll{max-height:none}
-          .askme-bubble::before{left:28px;top:-9px;box-shadow:-1px -1px 0 0 var(--line)}
+          /* the panel is an overlay on the one-screen hero: bubble beside his head, a chip dock at the bottom */
+          .askme{position:absolute;inset:0;z-index:3;width:auto;max-height:none;pointer-events:none}
+          .askme-body{display:block}
+          .askme-body>.askme-bubble{position:absolute;pointer-events:auto;top:calc(76px + var(--mh) - var(--ch) * .95);right:var(--gutter);width:var(--askw);max-height:max(150px,calc(var(--ch) * .8));min-height:0;border-radius:18px;transition:box-shadow .4s var(--ease)}
+          .askme.is-playing .askme-bubble{box-shadow:var(--shadow-hair),0 18px 40px -22px rgba(13,13,13,.45)}
+          .askme-scroll{max-height:none;padding:11px 13px 13px;border-radius:18px}
+          .askme-bubble::before{top:22px}
+          .askme-a{font-size:14px;line-height:1.45;min-height:0}
+          .askme-q{font-size:9.5px}
+          .askme-link{font-size:11.5px;padding:5px 9px}
+          .askme-links:not(.is-in){display:none}
+          .askme-head{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+          .askme-dock{position:absolute;left:0;right:0;bottom:calc(14px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:8px;padding-left:var(--gutter);pointer-events:auto}
+          .askme-ask{display:inline-flex;flex:none;align-items:center;gap:6px;height:40px;padding:0 14px 0 12px;border-radius:999px;background:var(--ink);color:#fff;font-size:14px;font-weight:600}
+          .askme-chips{flex:1 1 auto;min-width:0;flex-wrap:nowrap;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x mandatory;scroll-padding-inline:16px;padding:2px var(--gutter) 2px 2px;scrollbar-width:none;-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 var(--fl,0px),#000 calc(100% - var(--fr,0px)),transparent 100%);mask-image:linear-gradient(90deg,transparent 0,#000 var(--fl,0px),#000 calc(100% - var(--fr,0px)),transparent 100%)}
+          .askme-chips::-webkit-scrollbar{display:none}
+          .askme-chips.fade-l{--fl:22px}
+          .askme-chips.fade-r{--fr:36px}
+          .askme-chips>li{flex:none;scroll-snap-align:start}
+          .askme-chip{white-space:nowrap;height:40px;padding:0 15px;font-size:13.5px;background:rgba(255,255,255,.86);-webkit-tap-highlight-color:transparent}
+          .askme-chip:hover{background:rgba(255,255,255,.86);color:var(--ink)}
+          .askme-chip.is-active{background:var(--ink);color:#fff}
+          .askme-form{display:none;flex:1 1 auto;margin-right:var(--gutter);height:44px;align-items:center;padding:4px 4px 4px 16px;box-shadow:var(--shadow-hair),0 10px 30px -18px rgba(13,13,13,.4)}
+          .askme-input{font-size:16px}
+          .askme-close{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:50%;color:var(--mute);order:-1;margin-left:-10px}
+          .askme.is-typing .askme-ask,.askme.is-typing .askme-chips{display:none}
+          .askme.is-typing .askme-form{display:flex;animation:askIn .3s var(--ease)}
+          @keyframes askIn{from{opacity:0;transform:translateY(6px)}}
         }
         @media (prefers-reduced-motion: reduce){.askme-caret{animation:none}.askme-links{transition:none}}
       `}</style>

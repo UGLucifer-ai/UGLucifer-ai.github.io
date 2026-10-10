@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { HERO, PROFILE, HAS, asset, answerClip } from "@/lib/data";
+import { getLenis } from "@/lib/scroll";
+import { prefersReducedMotion } from "@/lib/hooks";
 import Pill from "@/components/ui/Pill";
 import AskMe, { type AskMeHero, type ClipCallbacks } from "@/components/hero/AskMe";
 
@@ -12,10 +14,14 @@ function splitRole(role: string): [string, string] {
   return [parts.slice(0, -1).join(" "), parts[parts.length - 1]];
 }
 
+/** the mobile layout (hero fits one screen, Ask me docked at the bottom) */
+const MOBILE_MQ = "(max-width: 959px)";
+
 type ActiveClip = { id: string; cb: ClipCallbacks; srcs: string[]; tried: number; started: boolean; speech?: [number, number] };
 
 export default function Hero() {
   const sectionRef = useRef<HTMLElement>(null);
+  const mediaRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const answerRef = useRef<HTMLVideoElement>(null);
   const [soundOn, setSoundOn] = useState(false);
@@ -27,6 +33,10 @@ export default function Hero() {
   const clipRef = useRef<ActiveClip | null>(null);
   /** the intro loop is held (paused) underneath a playing answer clip */
   const loopHeldRef = useRef(false);
+  /** visibility pausing is suspended while we scroll the hero into view / the visitor types a question */
+  const holdUntilRef = useRef(0);
+  const typingHoldRef = useRef(false);
+  const lastRatioRef = useRef(1);
 
   const [lead, accent] = splitRole(PROFILE.role || PROFILE.name);
 
@@ -85,30 +95,83 @@ export default function Hero() {
     return cleanup;
   }, [tryPlay]);
 
-  // 3) pause when < 35 % of the hero is visible, resume when back (the answer clip if one is playing, else the loop)
+  // 3) pause when < 35 % of the hero is visible, resume when back (the answer clip if one is playing, else the loop).
+  //    Pausing is skipped while held (a programmatic scroll back to the hero, or the mobile keyboard is up).
+  const isHeld = () => typingHoldRef.current || performance.now() < holdUntilRef.current;
+  const applyVisibility = useCallback((ratio: number) => {
+    const v = videoRef.current;
+    const a = answerRef.current;
+    if (!v) return;
+    const vis = ratio >= 0.35;
+    if (!vis && (typingHoldRef.current || performance.now() < holdUntilRef.current)) return;
+    visibleRef.current = vis;
+    if (vis) {
+      if (clipRef.current) a?.play().catch(() => {});
+      else if (!loopHeldRef.current) v.play().catch(() => {});
+    } else {
+      v.pause();
+      a?.pause();
+    }
+  }, []);
+
   useEffect(() => {
     if (!HERO.enabled) return;
     const el = sectionRef.current;
     if (!el) return;
     const io = new IntersectionObserver(
       ([e]) => {
-        const v = videoRef.current;
-        const a = answerRef.current;
-        if (!v) return;
-        visibleRef.current = e.intersectionRatio >= 0.35;
-        const clip = clipRef.current;
-        if (visibleRef.current) {
-          if (clip) a?.play().catch(() => {});
-          else v.play().catch(() => {});
-        } else {
-          v.pause();
-          a?.pause();
-        }
+        lastRatioRef.current = e.intersectionRatio;
+        applyVisibility(e.intersectionRatio);
       },
       { threshold: [0, 0.35, 0.6, 1] },
     );
     io.observe(el);
     return () => io.disconnect();
+  }, [applyVisibility]);
+
+  /** suspend visibility pausing for `ms`, then re-check against the latest ratio */
+  const holdFor = useCallback(
+    (ms: number) => {
+      holdUntilRef.current = Math.max(holdUntilRef.current, performance.now() + ms);
+      setTimeout(() => !isHeld() && applyVisibility(lastRatioRef.current), ms + 30);
+    },
+    [applyVisibility],
+  );
+
+  const holdForTyping = useCallback(
+    (on: boolean) => {
+      typingHoldRef.current = on;
+      if (!on) holdFor(600); // the keyboard is closing: give the viewport a moment to settle
+    },
+    [holdFor],
+  );
+
+  /** Mobile safety net: if the character is < 60 % on screen when a question is asked, bring the hero back. */
+  const reveal = useCallback(() => {
+    const el = sectionRef.current;
+    const m = mediaRef.current;
+    if (!el || !m || !window.matchMedia(MOBILE_MQ).matches) return;
+    const r = m.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const seen = r.height > 0 ? (Math.min(r.bottom, vh) - Math.max(r.top, 0)) / r.height : 1;
+    if (seen >= 0.6) return;
+    const y = Math.max(0, el.getBoundingClientRect().top + window.scrollY);
+    const reduced = prefersReducedMotion();
+    holdFor(reduced ? 300 : 1500);
+    visibleRef.current = true; // the clip starts now, inside the tap (sound allowed), while we scroll back up
+    const lenis = getLenis();
+    if (lenis && !reduced) lenis.scrollTo(y, { duration: 0.9 });
+    else window.scrollTo({ top: y, behavior: reduced ? "auto" : "smooth" });
+  }, [holdFor]);
+
+  // the mobile layout sizes and places the character from its rendered height (--mh)
+  useEffect(() => {
+    const el = sectionRef.current;
+    const m = mediaRef.current;
+    if (!el || !m || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => el.style.setProperty("--mh", `${Math.round(m.getBoundingClientRect().height)}px`));
+    ro.observe(m);
+    return () => ro.disconnect();
   }, []);
 
   /* ───────────── answer clips (second, stacked <video>; crossfades over the loop) ───────────── */
@@ -256,7 +319,7 @@ export default function Hero() {
     }
   };
 
-  const askHero: AskMeHero = { hasClip: (id) => !!answerClip(id), playAnswer, stopAnswer };
+  const askHero: AskMeHero = { hasClip: (id) => !!answerClip(id), playAnswer, stopAnswer, reveal, holdForTyping };
 
   const ctas = [
     HAS.work && { href: "#work", label: "Explore work", primary: true },
@@ -271,7 +334,7 @@ export default function Hero() {
       </p>
 
       {HERO.enabled ? (
-        <div className="hero-media">
+        <div className="hero-media" ref={mediaRef}>
           <div className="hero-halo" aria-hidden="true" />
           <video
             ref={videoRef}
@@ -314,7 +377,7 @@ export default function Hero() {
           </button>
         </div>
       ) : (
-        <div className="hero-media hero-media--empty" aria-hidden="true" />
+        <div className="hero-media hero-media--empty" ref={mediaRef} aria-hidden="true" />
       )}
 
       <div className="hero-copy wrap">
@@ -366,19 +429,21 @@ export default function Hero() {
         .hero-title{margin-top:14px;font-size:clamp(40px,6.2vw,96px);max-width:9ch}
         .hero-ctas{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
         @media (max-width: 959px){
-          .hero{justify-content:flex-start;padding-top:76px;min-height:auto}
-          .hero-media{position:relative;left:auto;right:auto;height:62svh;width:calc(62svh * .8)}
-          .hero-media--empty{height:28svh}
-          .hero-ghost{top:34svh}
-          .hero-copy{flex-direction:column;align-items:flex-start;margin-top:8px}
-          .hero-title{max-width:none}
+          /* one screen: character (stage) · name + CTAs · Ask me dock. --mh = the stage height (measured).
+             The character (--ch tall) stands at the bottom of the stage, cropped to the middle 80 % of the frame
+             (his gestures stay within 17–77 %), and is capped/slid left just enough that the caption bubble
+             (--askw wide, top-right) never covers his face (face right edge = 40.6 % of --ch from the box's left) */
+          .hero{--askw:clamp(150px,44vw,300px);--mh:calc(100svh - 330px);--ch:min(var(--mh),calc((100vw - var(--gutter) - var(--askw) - 10px) / .4064));height:100svh;min-height:560px;justify-content:flex-start;align-items:stretch;padding-top:76px}
+          .hero-media{position:relative;left:auto;right:auto;flex:1 1 0;min-height:0;height:auto;max-width:none;width:calc(var(--ch) * .64);margin:0;margin-left:max(0px,min(calc(50% - var(--ch) * .32),calc(100% - var(--gutter) - var(--askw) - 10px - var(--ch) * .4064)));display:flex;flex-direction:column;justify-content:flex-end}
+          .hero-media .hero-video{flex:none;height:var(--ch);-webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent),linear-gradient(180deg,#000 95%,transparent);mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent),linear-gradient(180deg,#000 95%,transparent)}
+          .hero-media .hero-answer{top:auto;bottom:0;height:var(--ch);width:100%}
+          .hero-ghost{top:calc(76px + var(--mh) - var(--ch) * .58);font-size:clamp(120px,36vw,320px)}
+          .hero-copy{flex:none;flex-direction:column;align-items:flex-start;gap:12px;margin-top:2px;padding-bottom:calc(74px + env(safe-area-inset-bottom))}
+          .hero-title{margin-top:8px;max-width:none;font-size:clamp(34px,9.2vw,60px)}
           .hero-ctas{justify-content:flex-start}
-          .hero-sound{right:4%;bottom:12%}
-          .hero--novideo{justify-content:flex-end;min-height:100svh}
-          .hero--novideo .hero-media--empty{display:none}
-          .hero--novideo .hero-ghost{top:42%}
-          .hero--novideo .hero-copy{margin-top:0}
+          .hero-sound{right:0;bottom:9%;width:42px;height:42px}
         }
+        @media (max-width: 959px) and (max-height: 600px){.hero-title{font-size:30px}}
       `}</style>
     </section>
   );
