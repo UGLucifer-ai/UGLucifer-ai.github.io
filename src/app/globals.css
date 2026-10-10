@@ -241,3 +241,118 @@
     transform: none !important;
   }
 }
+
+/* ─────────────────────────── Page background: dot field + travelling wave ─────────────────────────── */
+/* body is transparent so the fixed z:-1 layer shows; html keeps the paper colour underneath. */
+body {
+  background: transparent;
+}
+.pbg {
+  --dot-gap: 22px;
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+.pbg i,
+.pbg span {
+  position: absolute;
+  display: block;
+  will-change: transform;
+}
+.pbg .d-base,
+.pbg .d-dark {
+  background-size: var(--dot-gap) var(--dot-gap);
+  background-position: calc(var(--dot-gap) / 2) calc(var(--dot-gap) / 2);
+}
+.pbg .d-base {
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(13, 13, 13, 0.09) 1.1px, transparent 1.6px);
+}
+/* The band translates right while its inner dot layer counter-translates, so the dots stay put
+   and only the soft band of darker dots travels across. */
+.pbg .d-wave {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 46vw;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+  transform: translate3d(-46vw, 0, 0);
+  animation: pbgWave 16s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.pbg .d-dark {
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100%;
+  background-image: radial-gradient(circle, rgba(13, 13, 13, 0.28) 1.3px, transparent 1.9px);
+  animation: pbgWaveIn 16s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes pbgWave { from { transform: translate3d(-46vw, 0, 0); } to { transform: translate3d(100vw, 0, 0); } }
+@keyframes pbgWaveIn { from { transform: translate3d(46vw, 0, 0); } to { transform: translate3d(-100vw, 0, 0); } }
+@media (max-width: 640px) {
+  /* sparser, fainter field on phones so it never gets busy */
+  .pbg { --dot-gap: 26px; }
+  .pbg .d-base { background-image: radial-gradient(circle, rgba(13, 13, 13, 0.075) 1px, transparent 1.5px); }
+  .pbg .d-wave { width: 70vw; transform: translate3d(-70vw, 0, 0); animation-name: pbgWaveM; }
+  .pbg .d-dark { animation-name: pbgWaveMIn; }
+  @keyframes pbgWaveM { from { transform: translate3d(-70vw, 0, 0); } to { transform: translate3d(100vw, 0, 0); } }
+  @keyframes pbgWaveMIn { from { transform: translate3d(70vw, 0, 0); } to { transform: translate3d(-100vw, 0, 0); } }
+}
+
+/* Halo behind the hero character: a soft paper-coloured glow so the dots fade out right where he
+   stands (multiply blends him onto this, so he never picks up dots). z:-1 = just above .pbg. */
+.hero-halo {
+  position: absolute;
+  z-index: -1;
+  left: -30%;
+  right: -30%;
+  top: 4%;
+  bottom: -6%;
+  background: radial-gradient(closest-side, var(--paper) 52%, rgba(244, 242, 238, 0) 100%);
+  pointer-events: none;
+}
+
+/* Text scrims: a feathered paper-coloured panel behind text-heavy columns so paragraphs read on a
+   clean ground, while the dots and wave stay visible in open space around them. */
+.about-left,
+.about-right {
+  position: relative; /* .tline is already relative, .inspector is sticky */
+}
+.about-left::after,
+.about-right::after,
+.tline::after,
+.inspector::after {
+  content: "";
+  position: absolute;
+  inset: -36px calc(-1 * min(44px, var(--gutter))); /* never past the page edge (no x-overflow on phones) */
+  z-index: -1;
+  pointer-events: none;
+  background: var(--paper);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 44px, #000 calc(100% - 44px), transparent), linear-gradient(180deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(90deg, transparent, #000 44px, #000 calc(100% - 44px), transparent), linear-gradient(180deg, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+  mask-composite: intersect;
+}
+/* the timeline is a tall, wide column: keep a whisper of the field visible through it */
+.tline::after {
+  opacity: 0.88;
+}
+
+/* Reduced motion: hold a static frame with the band resting mid-screen. */
+@media (prefers-reduced-motion: reduce) {
+  .pbg i,
+  .pbg span {
+    animation: none !important;
+  }
+  .pbg .d-wave {
+    transform: translate3d(30vw, 0, 0);
+  }
+  .pbg .d-dark {
+    transform: translate3d(-30vw, 0, 0);
+  }
+}

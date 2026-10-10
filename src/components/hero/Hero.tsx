@@ -272,6 +272,7 @@ export default function Hero() {
 
       {HERO.enabled ? (
         <div className="hero-media">
+          <div className="hero-halo" aria-hidden="true" />
           <video
             ref={videoRef}
             className={`hero-video ${answering ? "is-under" : ""}`}

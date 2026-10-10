@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import { PROFILE, asset } from "@/lib/data";
+import PageBackground from "@/components/ui/PageBackground";
 import "./globals.css";
 
 const interTight = localFont({
@@ -66,7 +67,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`${interTight.variable} ${instrumentSerif.variable} ${jetbrainsMono.variable}`}
     >
-      <body>{children}</body>
+      <body>
+        <PageBackground />
+        {children}
+      </body>
     </html>
   );
 }
