@@ -336,9 +336,9 @@ export const CHIP_SCRIPTS: Record<string, string> = {
   kubernetes: "I've run Kubernetes on EKS, AKS and OpenShift, handling upgrades, autoscaling and troubleshooting, and deploying with Helm and Argo CD.",
   aws: "I'm hands-on with AWS: EC2, EKS, VPC and IAM. At JPMC I build secure infrastructure for banking applications.",
   cicd: "I've built CI/CD pipelines with Jenkins, GitHub Actions and Azure DevOps, automating builds, testing, security scans and rollbacks.",
-  tools: "My core stack is AWS, Azure and GCP, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana.",
+  tools: "My core stack is AWS, Azure and Google Cloud, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana.",
   contact: "Thanks for asking! You can reach me through the contact section or LinkedIn below. I'd love to hear from you.",
-  resume: "Sure, my résumé is downloading now. If it doesn't start, grab my résumé with the button below.",
+  resume: "Sure, it's downloading now. If it doesn't start, just use the download button below.",
 };
 
 /** Answer for a suggested chip: its clip script as the text, with the intent's links. */

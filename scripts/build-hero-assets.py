@@ -499,7 +499,7 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
     t0, t1 = 0.0, last
     audio = read_audio(clip, 0, meta["duration"] + 1) if meta["audio"] else None
     if audio is not None:
-        sb = speech_bounds(audio)
+        sb = speech_bounds(audio, args.speech_db)
         if sb:
             on, off = sb
             t0 = max(0.0, math.floor((on - args.lead) * fps) / fps)
@@ -599,6 +599,9 @@ def main() -> None:
     ap.add_argument("--answer", metavar="ID",
                     help="build an 'Ask me' answer clip from INPUT → public/hero/answers/ID.{mp4,webm} + ID-poster.webp "
                          f"(chip ids: {', '.join(ANSWER_IDS)})")
+    ap.add_argument("--speech-db", type=float, default=-45.0,
+                    help="--answer: speech threshold in dB below the peak (default -45; raise to e.g. -30 if breaths "
+                         "or room noise before/after the words keep the silence trim from working)")
     ap.add_argument("--lead", type=float, default=0.2, help="--answer: silence kept before/after speech, seconds (default 0.2)")
     ap.add_argument("--ref", type=Path, default=Path("inputs/intro.mp4"),
                     help="--answer: intro video to recompute the hero framing from if scripts/hero-framing.json is missing")

@@ -233,7 +233,9 @@ export const ANSWER_CLIP_IDS: AnswerClipId[] = [
   "who",
   "whatdo",
   "current",
-  // still to come: "kubernetes", "aws", "cicd", "tools", "contact", "resume",
+  "kubernetes",
+  "aws",
+  // still to come: "cicd", "tools", "contact", "resume",
 ];
 
 export function answerClip(id: string): AnswerClip | null {
