@@ -234,15 +234,15 @@ export const HERO_IDLE: {
   /**
    * Optional idle variation: a silent ~8 s clip where he steps through a soft white door behind him and comes back
    * to the starting pose (hands in pockets). Played once after a random 25–40 s of rest, then again every 25–40 s,
-   * returning to the still frame he rests on (or to the idle loop, if that is enabled). Never under reduced motion.
+   * returning to the idle loop (or, with the idle off, to the still frame he rests on). Never under reduced motion.
    * Build: `scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4 --bg-key plate` (→ public/hero/idle-door.*).
    */
   door: { enabled: boolean; webm: string; mp4: string; poster: string };
 } = {
-  // OFF: the idleA loop (hand-rubbing) looked restless — after an answer he holds still on its last frame instead.
-  // Ready for a calmer clip (hands in pockets, minimal motion): save it as inputs/idle.mp4, run
-  // `scripts/build-hero-assets.py --idle inputs/idle.mp4 --start S --duration D [--bg-key luma]`, then set true.
-  enabled: false,
+  // inputs/idle.mp4 = Flow idleC (hands in pockets, calm): window 2.625–5.67 s (lips closed, head still at both
+  // turn points), ping-pong loop 6.0 s, hero whiten levels + --bg-key luma, no audio track. Rebuild:
+  // `scripts/build-hero-assets.py --idle inputs/idle.mp4 --start 2.625 --duration 3.0833 --pingpong --bg-key luma`
+  enabled: true,
   webm: "/hero/idle.webm",
   mp4: "/hero/idle.mp4",
   poster: "/hero/idle-poster.webp",

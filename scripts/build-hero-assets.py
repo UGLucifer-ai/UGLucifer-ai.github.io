@@ -696,8 +696,8 @@ def build_idle(clip: Path, out: Path, args) -> None:
     print(f"• idle: {clip} {meta['w']}×{meta['h']} @ {meta['fps']:.3f} fps, {meta['duration']:.2f}s (audio dropped)")
     D = loop_window(meta, args.start, args.duration)
     box, whiten, fr = match_framing(clip, meta, fr, args, [(args.start, args.start + D)])
-    F = args.fade
-    if D < 4 * F:
+    F = 0.0 if args.pingpong else args.fade
+    if not args.pingpong and D < 4 * F:
         sys.exit(f"✗ usable clip ({D:.2f}s) is too short for a {F}s cross-fade")
     fps = meta["fps"]
     tmp = Path(tempfile.mkdtemp(prefix="idle-"))
@@ -709,12 +709,20 @@ def build_idle(clip: Path, out: Path, args) -> None:
         still_fc = (f"[0:v]{still_chain}[s0];[s0][1:v]overlay=eof_action=repeat:format=auto,format=yuv420p[still]"
                     if has_veil else f"[0:v]{still_chain},format=yuv420p[still]")
         # NB: keep `fps` LAST (ffmpeg 7.1 colorlevels/pad bug) — same xfade loop as the hero, picture only
-        fc = (f"{still_fc};[still]fps={meta['fps_str']},split[a][b];"
-              f"[a]trim=start={F}:end={D},setpts=PTS-STARTPTS,fps={meta['fps_str']}[body];"
-              f"[b]trim=start=0:end={F},setpts=PTS-STARTPTS,fps={meta['fps_str']}[head];"
-              f"[body][head]xfade=transition=fade:duration={F}:offset={D - 2 * F},format=yuv420p[v]")
+        if args.pingpong:
+            # forward then reversed (turn-point frames not repeated): no pose jump, slow breathing/tilts just ease back
+            N = int(round(D * fps))
+            fc = (f"{still_fc};[still]fps={meta['fps_str']},trim=end_frame={N},setpts=PTS-STARTPTS,split[a][b];"
+                  f"[b]reverse,trim=start_frame=1:end_frame={N - 1},setpts=PTS-STARTPTS[r];"
+                  f"[a][r]concat=n=2:v=1:a=0,fps={meta['fps_str']},format=yuv420p[v]")
+            print(f"• ping-pong picture loop: {N} frames forward + {N - 2} reversed = {(2 * N - 2) / fps:.3f}s")
+        else:
+            fc = (f"{still_fc};[still]fps={meta['fps_str']},split[a][b];"
+                  f"[a]trim=start={F}:end={D},setpts=PTS-STARTPTS,fps={meta['fps_str']}[body];"
+                  f"[b]trim=start=0:end={F},setpts=PTS-STARTPTS,fps={meta['fps_str']}[head];"
+                  f"[body][head]xfade=transition=fade:duration={F}:offset={D - 2 * F},format=yuv420p[v]")
+            print(f"• seamless picture loop (xfade {F}s): {D - F:.3f}s")
         video_tmp = tmp / "idle.mkv"
-        print(f"• seamless picture loop (xfade {F}s): {D - F:.3f}s")
         ffmpeg("-ss", f"{args.start}", "-t", f"{D}", "-i", str(clip), *veil_in, "-filter_complex", fc,
                "-map", "[v]", "-an", "-c:v", "ffv1", str(video_tmp))
         t_chk = round((D / 2) * fps) / fps
@@ -841,6 +849,8 @@ def main() -> None:
                     help="output px over which the picture fades into the white side padding (default 72)")
     ap.add_argument("--whiten-max", type=float, default=None,
                     help="colorlevels max for all channels (default: auto from the backdrop, capped at 0.98)")
+    ap.add_argument("--pingpong", action="store_true",
+                    help="--idle: loop forward then reversed instead of the xfade (for clips whose first/last poses differ, e.g. a slow head tilt)")
     ap.add_argument("--bg-key", choices=["plate", "luma"], default=None,
                     help="--idle/--idle-door: background-only clean-up after the hero whiten (character tones untouched): "
                          "plate = temporal-median backdrop (he walks out of frame, e.g. the door walk), "
