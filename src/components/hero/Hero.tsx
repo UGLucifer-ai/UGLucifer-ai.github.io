@@ -765,7 +765,13 @@ export default function Hero() {
           .hero-title{margin-top:8px;max-width:none;font-size:clamp(34px,9.2vw,60px)}
           .hero-ctas{justify-content:flex-start}
           .hero-sound{right:0;bottom:9%;width:42px;height:42px}
+          /* the door walk ends with him peeking back in at the top right, where the caption bubble sits: fade it out
+             for the door clip, back in when it ends; a question (phase → answer) brings it back at once */
+          .hero .askme-body>.askme-bubble{transition:box-shadow .4s var(--ease),opacity .25s var(--ease),transform .25s var(--ease)}
+          .hero[data-phase="rest"][data-layer="door"] .askme-body>.askme-bubble{opacity:0;transform:scale(.94);transform-origin:0 30px;pointer-events:none}
+          .hero[data-phase="answer"] .askme-body>.askme-bubble{transition:box-shadow .4s var(--ease)}
         }
+        @media (max-width: 959px) and (prefers-reduced-motion: reduce){.hero .askme-body>.askme-bubble{transition:none}}
         @media (max-width: 959px) and (max-height: 600px){.hero-title{font-size:30px}}
       `}</style>
     </section>
