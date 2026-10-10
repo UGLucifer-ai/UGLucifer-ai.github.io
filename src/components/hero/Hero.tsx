@@ -21,7 +21,8 @@ type Phase = "intro" | "answer" | "rest";
 type Layer = "loop" | "answer" | "idle" | "door";
 
 /** idle loops between door walks: 3–4, now and then 5 */
-const doorGap = () => 3 + Math.floor(Math.random() * 2) + (Math.random() < 0.15 ? 1 : 0);
+/** the door walk plays once after a random 25–40 s of rest (then again after another 25–40 s) */
+const doorDelay = () => 25000 + Math.random() * 15000;
 
 type ActiveClip = { id: string; cb: ClipCallbacks; srcs: string[]; tried: number; started: boolean; speech?: [number, number] };
 
@@ -63,13 +64,18 @@ export default function Hero() {
   const doorFailedRef = useRef(false);
   /** a door walk was started (a looping idle fires 'playing' again at every wrap — that must not cancel it) */
   const doorPendingRef = useRef(false);
-  const idleLoopsRef = useRef({ n: 0, gap: doorGap(), lastT: 0 });
+  const doorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const doorFromRef = useRef<Layer>("answer"); // the still (or idle) layer the door walk returns to
 
   const go = useCallback((p: Phase) => {
     phaseRef.current = p;
     setPhase(p);
     const v = videoRef.current;
     if (v) v.loop = p === "intro"; // never a looping talker outside the intro
+    if (p !== "rest" && doorTimerRef.current) {
+      clearTimeout(doorTimerRef.current);
+      doorTimerRef.current = null;
+    }
   }, []);
   const show = useCallback((l: Layer) => {
     layerRef.current = l;
@@ -186,6 +192,40 @@ export default function Hero() {
     d.src = asset(webm ? HERO_IDLE.door.webm : HERO_IDLE.door.mp4);
   }, []);
 
+  const doorUsable = () =>
+    HERO_IDLE.door.enabled && !!doorRef.current && !doorFailedRef.current && !prefersReducedMotion();
+  /** (re)arm the door walk: after 25–40 s of rest, if he's still resting, on screen and the clip is ready */
+  const scheduleDoor = useCallback((ms: number = doorDelay()) => {
+    if (doorTimerRef.current) clearTimeout(doorTimerRef.current);
+    doorTimerRef.current = null;
+    if (!doorUsable() || phaseRef.current !== "rest") return;
+    const prime = Math.max(0, ms - 5000);
+    doorTimerRef.current = setTimeout(() => {
+      primeDoor(); // load it ~5 s ahead
+      doorTimerRef.current = setTimeout(function fire() {
+        doorTimerRef.current = null;
+        const d = doorRef.current;
+        if (!d || !doorUsable() || phaseRef.current !== "rest" || layerRef.current === "door") return;
+        if (!visibleRef.current || document.visibilityState !== "visible" || d.readyState < 3) {
+          doorTimerRef.current = setTimeout(fire, 2000); // not now: try again shortly
+          return;
+        }
+        doorFromRef.current = layerRef.current;
+        doorPendingRef.current = true;
+        d.muted = true;
+        try {
+          d.currentTime = 0;
+        } catch {
+          /* not seekable */
+        }
+        d.play().catch(() => {
+          doorPendingRef.current = false;
+          scheduleDoor();
+        });
+      }, ms - prime);
+    }, prime);
+  }, [primeDoor]);
+
   /** freeze fallback for a rest that didn't come from a finished clip: the intro's first frame (= hero poster) */
   const showPosterStill = useCallback(() => {
     const a = answerRef.current;
@@ -218,7 +258,6 @@ export default function Hero() {
       const a = answerRef.current;
       clipRef.current = null;
       restKindRef.current = kind;
-      idleLoopsRef.current = { n: 0, gap: doorGap(), lastT: 0 };
       doorPendingRef.current = false;
       doorRef.current?.pause();
       go("rest");
@@ -241,8 +280,9 @@ export default function Hero() {
         if (kind === "stopped" && layerRef.current === "loop" && !visibleRef.current) showPosterStill();
       } else if (kind === "stopped" && !(layerRef.current === "answer" && a?.ended)) showPosterStill();
       // kind "ended" without idle: the answer layer stays up, paused on its last frame (hands in pockets)
+      scheduleDoor();
     },
-    [enforce, go, playIdle, showPosterStill],
+    [enforce, go, playIdle, scheduleDoor, showPosterStill],
   );
 
   /** ▶ after an answer: back to the intro from its first frame, with sound (called inside the click) */
@@ -287,7 +327,11 @@ export default function Hero() {
     const p = phaseRef.current;
     if (p === "intro") v?.play().catch(() => {});
     else if (p === "answer" && clipRef.current) a?.play().catch(() => {});
-    else if (p === "rest") playIdle();
+    else if (p === "rest") {
+      const d = doorRef.current;
+      if (layerRef.current === "door" && d && !doorFailedRef.current) d.play().catch(() => {});
+      else playIdle();
+    }
   }, [playIdle]);
 
   useEffect(() => {
@@ -360,6 +404,10 @@ export default function Hero() {
     if (lenis && !reduced) lenis.scrollTo(y, { duration: 0.9 });
     else window.scrollTo({ top: y, behavior: reduced ? "auto" : "smooth" });
   }, [holdFor]);
+
+  useEffect(() => () => {
+    if (doorTimerRef.current) clearTimeout(doorTimerRef.current);
+  }, []);
 
   // the mobile layout sizes and places the character from its rendered height (--mh)
   useEffect(() => {
@@ -508,58 +556,39 @@ export default function Hero() {
       if (phaseRef.current === "rest" && layerRef.current !== "answer") showPosterStill();
       else if (phaseRef.current === "rest" && restKindRef.current === "stopped" && !answerRef.current?.ended) showPosterStill();
     };
-    // count idle loops (currentTime wraps back to ~0); every few loops, walk through the door once
-    const onTime = () => {
-      const c = idleLoopsRef.current;
-      const t = i.currentTime;
-      if (t + 0.5 < c.lastT && phaseRef.current === "rest" && layerRef.current === "idle") {
-        c.n++;
-        const d = doorRef.current;
-        if (d && HERO_IDLE.door.enabled && !doorFailedRef.current && !prefersReducedMotion()) {
-          if (c.n >= c.gap - 1) primeDoor(); // load it one loop ahead
-          if (c.n >= c.gap && d.readyState >= 3 && visibleRef.current) {
-            c.n = 0;
-            c.gap = doorGap();
-            doorPendingRef.current = true;
-            d.muted = true;
-            d.currentTime = 0;
-            d.play().catch(() => (doorPendingRef.current = false));
-          }
-        }
-      }
-      c.lastT = t;
-    };
     i.addEventListener("playing", onPlaying);
     i.addEventListener("error", onError);
-    i.addEventListener("timeupdate", onTime);
     return () => {
       i.removeEventListener("playing", onPlaying);
       i.removeEventListener("error", onError);
-      i.removeEventListener("timeupdate", onTime);
     };
-  }, [playIdle, primeDoor, show, showPosterStill]);
+  }, [playIdle, show, showPosterStill]);
 
   // door <video> events: cut to it when it starts (it opens on the idle pose), back to the idle loop when done
   useEffect(() => {
     const d = doorRef.current;
     if (!d) return;
     let tried = 0;
+    // back to what was showing before the walk: the idle loop (from its start), or the still frame he rests on
     const backToIdle = () => {
       const i = idleRef.current;
       doorPendingRef.current = false;
       d.pause();
-      if (phaseRef.current !== "rest" || !i) return;
-      try {
-        i.currentTime = 0;
-      } catch {
-        /* not seekable */
-      }
-      idleLoopsRef.current.lastT = 0;
-      if (visibleRef.current) i.play().catch(() => {}); // 'playing' → show("idle")
-      else show("idle");
+      if (phaseRef.current !== "rest") return;
+      scheduleDoor();
+      if (doorFromRef.current === "idle" && i && HERO_IDLE.enabled && !idleFailedRef.current) {
+        try {
+          i.currentTime = 0;
+        } catch {
+          /* not seekable */
+        }
+        if (visibleRef.current) i.play().catch(() => {}); // 'playing' → show("idle")
+        else show("idle");
+      } else show(doorFromRef.current === "door" ? "answer" : doorFromRef.current);
     };
     const onPlaying = () => {
       if (phaseRef.current !== "rest") return d.pause();
+      if (layerRef.current !== "door") doorFromRef.current = layerRef.current;
       doorPendingRef.current = false;
       show("door");
       idleRef.current?.pause();
@@ -583,7 +612,7 @@ export default function Hero() {
       d.removeEventListener("ended", backToIdle);
       d.removeEventListener("error", onError);
     };
-  }, [show]);
+  }, [scheduleDoor, show]);
 
   const toggleSound = () => {
     if (justUnlockedRef.current) return; // this same click already unlocked sound
@@ -659,7 +688,7 @@ export default function Hero() {
               tabIndex={-1}
             />
           )}
-          {HERO_IDLE.enabled && HERO_IDLE.door.enabled && (
+          {HERO_IDLE.door.enabled && (
             <video
               ref={doorRef}
               className={`hero-video hero-answer hero-idle ${layer === "door" ? "is-on" : ""}`}

@@ -233,17 +233,21 @@ export const HERO_IDLE: {
   poster: string;
   /**
    * Optional idle variation: a silent ~8 s clip where he steps through a soft white door behind him and comes back
-   * to the starting pose. Played once every ~3–4 idle loops (randomised), then back to the idle loop. Needs the idle
-   * loop. Build: `scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4` (→ public/hero/idle-door.*).
+   * to the starting pose (hands in pockets). Played once after a random 25–40 s of rest, then again every 25–40 s,
+   * returning to the still frame he rests on (or to the idle loop, if that is enabled). Never under reduced motion.
+   * Build: `scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4 --bg-key plate` (→ public/hero/idle-door.*).
    */
   door: { enabled: boolean; webm: string; mp4: string; poster: string };
 } = {
-  enabled: true, // inputs/idle.mp4 (Flow idleA), mouth-still 3.542–7.792 s, 0.5 s xfade loop (3.71 s), no audio track
+  // OFF: the idleA loop (hand-rubbing) looked restless — after an answer he holds still on its last frame instead.
+  // Ready for a calmer clip (hands in pockets, minimal motion): save it as inputs/idle.mp4, run
+  // `scripts/build-hero-assets.py --idle inputs/idle.mp4 --start S --duration D [--bg-key luma]`, then set true.
+  enabled: false,
   webm: "/hero/idle.webm",
   mp4: "/hero/idle.mp4",
   poster: "/hero/idle-poster.webp",
   door: {
-    enabled: true, // inputs/idle-door.mp4 (Flow idleB), trimmed 0.29–8.67 s, --whiten-max 0.80 (clears the door set's wall/floor shading), no audio track
+    enabled: true, // inputs/idle-door.mp4 (Flow idleB), trimmed 0.29–8.67 s, hero whiten levels + --bg-key plate (backdrop-only clean-up), no audio track
     webm: "/hero/idle-door.webm",
     mp4: "/hero/idle-door.mp4",
     poster: "/hero/idle-door-poster.webp",

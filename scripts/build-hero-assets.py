@@ -604,6 +604,88 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _box(a: np.ndarray, r: int) -> np.ndarray:
+    """Separable box blur (radius r) on a 2-D float array, edge-padded."""
+    for ax in (0, 1):
+        pad = [(0, 0), (0, 0)]
+        pad[ax] = (r + 1, r)
+        c = np.cumsum(np.pad(a, pad, mode="edge"), axis=ax)
+        a = (np.take(c, range(2 * r + 1, c.shape[ax]), axis=ax) - np.take(c, range(0, c.shape[ax] - 2 * r - 1), axis=ax)) / (2 * r + 1)
+    return a
+
+
+def bg_key(src: Path, dst: Path, fps_str: str, mode: str, lo: float = 5.0, hi: float = 16.0) -> None:
+    """Background-only clean-up of a whitened, cropped lossless clip (the character's tones are left alone):
+    a backdrop plate is estimated — `plate`: per-pixel temporal median (for clips where he walks out of frame, e.g.
+    the door walk; he must be off a given pixel > 50 % of the time), `luma`: one flat level from the frame corners
+    (for clips where he barely moves) — and every pixel close to the plate (|Δluma| < lo…hi, soft ramp, blurred and
+    grown so the character's edges keep their own tones) is flat-fielded by 255/plate → clean 255 white with the
+    set's shading/grey cloud removed. Pixels that differ from the plate (the character and his moving shadow) keep
+    the hero-level tones untouched."""
+    W, H = OUT_W, OUT_H
+    h2, w2 = H // 2, W // 2
+    raw = ffmpeg("-i", str(src), "-vf", f"scale={w2}:{h2}:flags=area,format=gray", "-f", "rawvideo", "-", capture=True)
+    small = np.frombuffer(raw, np.uint8).reshape(-1, h2, w2)
+    n = len(small)
+    free_w = None  # per frame, full-res column weights: 1 = he is nowhere near this column → pure white
+    if mode == "plate":
+        # his dark parts (hair, beard, trousers) mark the columns he occupies in each frame (± a body-width margin);
+        # each backdrop column's plate is the median over the frames where he is elsewhere (no ghost of his
+        # start/end pose, which fills > 50 % of the clip)
+        dark = (small < 110)[:, int(h2 * 0.04):int(h2 * 0.97), :].sum(axis=1) >= 3       # n × w2
+        m = max(4, w2 // 10)
+        occ = dark.copy()
+        for k in range(1, m + 1):  # grow sideways by m columns (no wrap-around at the frame edges)
+            occ[:, k:] |= dark[:, :-k]
+            occ[:, :-k] |= dark[:, k:]
+        plate = np.median(small, axis=0).astype(np.float32)
+        free = ~occ
+        cols_ok = free.sum(axis=0) >= 3
+        for x in np.nonzero(cols_ok)[0]:
+            plate[:, x] = np.median(small[free[:, x], :, x], axis=0)
+        free_w = np.repeat(free.astype(np.float32), 2, axis=1)[:, :W]
+        print(f"  plate from his free frames for {100 * cols_ok.mean():.0f}% of columns "
+              f"(median {np.median(free.sum(axis=0)):.0f} frames each)")
+        plate = _box(plate, 6)
+    else:
+        k = max(8, w2 // 16)
+        corners = np.concatenate([small[:, :k, :k].ravel(), small[:, :k, -k:].ravel()])
+        plate = np.full((h2, w2), float(np.median(corners)), np.float32)
+    plate = np.clip(plate, 40, 255)
+    print(f"• background key ({mode}): {n} frames, plate luma {plate.min():.0f}–{plate.max():.0f} (median {np.median(plate):.0f})")
+    full_plate = np.repeat(np.repeat(plate, 2, 0), 2, 1)[:H, :W]
+    gain = (255.0 / full_plate)[..., None]
+    dec = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(src), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                           stdout=subprocess.PIPE)
+    enc = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                            "-s", f"{W}x{H}", "-framerate", fps_str, "-i", "-", "-an", "-c:v", "ffv1", "-pix_fmt", "yuv444p", str(dst)],
+                           stdin=subprocess.PIPE)
+    bg_share = []
+    for i in range(n):
+        buf = dec.stdout.read(W * H * 3)
+        if len(buf) < W * H * 3:
+            break
+        f = np.frombuffer(buf, np.uint8).reshape(H, W, 3).astype(np.float32)
+        d = _box(np.abs(small[i].astype(np.float32) - plate), 2)
+        a = np.clip((d - lo) / (hi - lo), 0, 1)                    # 1 = character / his shadow
+        a = np.maximum.reduce([a, np.roll(a, 1, 0), np.roll(a, -1, 0), np.roll(a, 1, 1), np.roll(a, -1, 1)])  # grow 1 px (2 px full-res)
+        a = _box(np.repeat(np.repeat(a, 2, 0), 2, 1)[:H, :W], 1)[..., None]
+        bg_share.append(float((a < 0.02).mean()))
+        bg = np.minimum(255, f * gain)
+        if free_w is not None:
+            # columns he's nowhere near in this frame: the set's light shifts as the door moves, so the plate can't
+            # match exactly there — key them straight to white (feathered ~24 px so there's no visible seam)
+            fwi = np.convolve(free_w[i], np.ones(49) / 49, mode="same")[None, :, None]
+            a = a * (1 - fwi)
+            bg = bg + (255 - bg) * fwi
+        out = a * f + (1 - a) * bg
+        enc.stdin.write(np.clip(out + 0.5, 0, 255).astype(np.uint8).tobytes())
+    enc.stdin.close(); enc.wait(); dec.stdout.close(); dec.wait()
+    if enc.returncode:
+        sys.exit("✗ background key: encoder failed")
+    print(f"  backdrop share keyed to white: {100 * np.mean(bg_share):.0f}% of the frame on average")
+
+
 def build_idle(clip: Path, out: Path, args) -> None:
     """Silent idle loop (he waits, no lip movement) → public/hero/idle.{mp4,webm} + idle-poster.webp.
     Same crop/align/whiten as the hero; audio dropped; seamless picture loop with the same xfade as the hero."""
@@ -645,6 +727,10 @@ def build_idle(clip: Path, out: Path, args) -> None:
         print(f"• integrity check @ {t_chk:.2f}s: mean |Δ| = {diff:.2f}")
         if diff > 6:
             sys.exit("✗ idle frames don't match the source render — ffmpeg filter issue; aborting")
+        if args.bg_key:
+            keyed = tmp / "idle-keyed.mkv"
+            bg_key(video_tmp, keyed, meta["fps_str"], args.bg_key)
+            video_tmp = keyed
         mp4, webm, poster = out / "hero" / "idle.mp4", out / "hero" / "idle.webm", out / "hero" / "idle-poster.webp"
         print("• encoding idle.mp4 (H.264 CRF 24 slow, no audio track, faststart)")
         ffmpeg("-i", str(video_tmp), "-map", "0:v", "-an", "-c:v", "libx264", "-crf", "24", "-preset", "slow",
@@ -715,6 +801,10 @@ def build_idle_door(clip: Path, out: Path, args) -> None:
         video_tmp = tmp / "door.mkv"
         ffmpeg("-ss", f"{s0 / fps}", "-i", str(clip), *veil_in, "-filter_complex", fc, "-map", "[v]",
                "-frames:v", str(N), "-an", "-c:v", "ffv1", str(video_tmp))
+        if args.bg_key:
+            keyed = tmp / "door-keyed.mkv"
+            bg_key(video_tmp, keyed, meta["fps_str"], args.bg_key)
+            video_tmp = keyed
         mp4, webm, poster = out / "hero" / "idle-door.mp4", out / "hero" / "idle-door.webm", out / "hero" / "idle-door-poster.webp"
         print("• encoding idle-door.mp4 / .webm (no audio track)")
         ffmpeg("-i", str(video_tmp), "-map", "0:v", "-an", "-c:v", "libx264", "-crf", "24", "-preset", "slow",
@@ -727,7 +817,7 @@ def build_idle_door(clip: Path, out: Path, args) -> None:
                 sys.exit(f"✗ {f} has an audio track — expected none")
         for f in (mp4, webm, poster):
             print(f"✓ {f}  ({f.stat().st_size / 1024:.0f} KB)")
-        print("\nNext: set HERO_IDLE.door.enabled = true in src/lib/data.ts (needs the idle loop too)")
+        print("\nNext: set HERO_IDLE.door.enabled = true in src/lib/data.ts")
     finally:
         if args.keep_tmp:
             print(f"(kept {tmp})")
@@ -751,6 +841,10 @@ def main() -> None:
                     help="output px over which the picture fades into the white side padding (default 72)")
     ap.add_argument("--whiten-max", type=float, default=None,
                     help="colorlevels max for all channels (default: auto from the backdrop, capped at 0.98)")
+    ap.add_argument("--bg-key", choices=["plate", "luma"], default=None,
+                    help="--idle/--idle-door: background-only clean-up after the hero whiten (character tones untouched): "
+                         "plate = temporal-median backdrop (he walks out of frame, e.g. the door walk), "
+                         "luma = flat backdrop level from the corners (he barely moves, e.g. a calm idle)")
     ap.add_argument("--og-time", type=float, default=None, help="frame time (s) for og.jpg (default: sharpest frame)")
     ap.add_argument("--photo", type=Path, help="optional photo for portrait-bust.webp")
     ap.add_argument("--photo-crop", help="W:H:X:Y head-to-shirt crop of --photo (4:5 recommended; may extend past the edges, e.g. negative Y for headroom — padded with a matched backdrop)")
