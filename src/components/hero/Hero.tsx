@@ -768,8 +768,8 @@ export default function Hero() {
         /* answer clip: stacked over the loop with the same box/crop, crossfaded in/out (heroRise fills backwards only, so opacity stays transitionable) */
         .hero-answer{position:absolute;inset:0;opacity:0;animation:none;pointer-events:none;transition:opacity .28s var(--ease)}
         .hero-answer.is-on{opacity:1}
-        /* idle ↔ door ↔ answer are different takes (hands at his sides vs in pockets): a slightly longer dissolve */
-        .hero-idle{transition:opacity .45s var(--ease)}
+        /* idle ↔ door ↔ answer are different takes: a short dissolve (a long one shows the small pose differences as a double image) */
+        .hero-idle{transition:opacity .25s var(--ease)}
         .hero-video.is-under{opacity:0}
         @media (prefers-reduced-motion: reduce){.hero-video{transition:none}}
         .hero-sound{position:absolute;right:6%;bottom:22%;width:46px;height:46px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;transition:transform .5s var(--ease)}

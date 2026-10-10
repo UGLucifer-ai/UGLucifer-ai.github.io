@@ -235,19 +235,20 @@ export const HERO_IDLE: {
    * Optional idle variation: a silent ~8 s clip where he steps through a soft white door behind him and comes back
    * to the starting pose (hands in pockets). Played once after a random 25–40 s of rest, then again every 25–40 s,
    * returning to the idle loop (or, with the idle off, to the still frame he rests on). Never under reduced motion.
-   * Build: `scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4 --bg-key plate` (→ public/hero/idle-door.*).
+   * Build: `scripts/build-hero-assets.py --idle-door inputs/idle-door.mp4 --sharpen 0.6 --bg-key plate` (→ public/hero/idle-door.*).
    */
   door: { enabled: boolean; webm: string; mp4: string; poster: string };
 } = {
   // inputs/idle.mp4 = Flow idleC (hands in pockets, calm): window 2.625–5.67 s (lips closed, head still at both
-  // turn points), ping-pong loop 6.0 s, hero whiten levels + --bg-key luma, no audio track. Rebuild:
-  // `scripts/build-hero-assets.py --idle inputs/idle.mp4 --start 2.625 --duration 3.0833 --pingpong --bg-key luma`
+  // turn points), ping-pong loop 6.0 s, hero whiten levels, head ×0.912 onto the answers' face box (idleC has a ~10 % bigger head),
+  // --bg-key luma, no audio track. Rebuild:
+  // `scripts/build-hero-assets.py --idle inputs/idle.mp4 --start 2.625 --duration 3.0833 --pingpong --head-match --bg-key luma`
   enabled: true,
   webm: "/hero/idle.webm",
   mp4: "/hero/idle.mp4",
   poster: "/hero/idle-poster.webp",
   door: {
-    enabled: true, // inputs/idle-door.mp4 (Flow idleB), trimmed 0.29–8.67 s, hero whiten levels + --bg-key plate (backdrop-only clean-up), no audio track
+    enabled: true, // inputs/idle-door.mp4 (Flow idleB), trimmed 0.29–8.67 s, hero whiten levels + --sharpen 0.6 (idleB renders ~2× softer) + --bg-key plate (backdrop-only clean-up), no audio track
     webm: "/hero/idle-door.webm",
     mp4: "/hero/idle-door.mp4",
     poster: "/hero/idle-door-poster.webp",

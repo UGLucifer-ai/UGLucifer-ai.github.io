@@ -686,6 +686,89 @@ def bg_key(src: Path, dst: Path, fps_str: str, mode: str, lo: float = 5.0, hi: f
     print(f"  backdrop share keyed to white: {100 * np.mean(bg_share):.0f}% of the frame on average")
 
 
+def _facebox(a: np.ndarray) -> np.ndarray:
+    """Face (skin) box of an OUT_W×OUT_H RGB frame: (centre x, skin top, skin bottom, cheek width)."""
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    skin = (r - b > 35) & (r > 120) & (r < 250)
+    y0, y1, x0, x1 = 40, int(OUT_H * 0.34), int(OUT_W * 0.29), int(OUT_W * 0.75)
+    sub = skin[y0:y1, x0:x1]
+    rows = np.nonzero(sub.sum(1) > 20)[0]
+    top, bot = rows[0], rows[-1]
+    band = sub[top:top + 90]
+    cols = np.nonzero(band.sum(0) > 8)[0]
+    return np.array([(cols.min() + cols.max()) / 2 + x0, top + y0, bot + y0, np.percentile(band.sum(1), 90)], np.float64)
+
+
+def _frame_rgb(path: Path, t: float) -> np.ndarray:
+    seek = ["-sseof", f"{t}"] if t < 0 else ["-ss", f"{t}"]
+    raw = ffmpeg(*seek, "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-", capture=True)
+    return np.frombuffer(raw, np.uint8).reshape(-1, OUT_H, OUT_W, 3)[-1].astype(np.float32)
+
+
+def head_reference(out: Path) -> np.ndarray:
+    """Median face box of the hero's frame 0 and every answer clip's last frame (where the idle/door cut in)."""
+    hero = next((f for f in (out / "hero" / "hero.mp4", out / "hero" / "hero.webm") if f.exists()), None)
+    srcs = ([(hero, 0.0)] if hero else []) + [(f, -0.1) for f in sorted((out / "hero" / "answers").glob("*.mp4"))]
+    if not srcs:
+        sys.exit("✗ --head-match needs the hero/answer clips in --out (public/hero/…)")
+    return np.median(np.array([_facebox(_frame_rgb(f, t)) for f, t in srcs]), 0)
+
+
+def head_match(src: Path, dst: Path, fps_str: str, ref: np.ndarray) -> None:
+    """A clip rendered with a different head-to-body ratio (Flow takes vary): the body is already aligned to the hero
+    (top/feet/centre), so here only the head is scaled + moved onto the reference face box with a smooth local warp
+    (full inside an ellipse round the face, easing to identity by the chest) — feet/body stay put, no jump on cuts."""
+    W, H = OUT_W, OUT_H
+    n_probe = [_facebox(_frame_rgb(src, t)) for t in (0.0, 0.5, 1.0, 1.5, 2.0, 2.5)]
+    cur = np.mean(np.array(n_probe), 0)
+    s = float(np.sqrt(((ref[2] - ref[1]) / (cur[2] - cur[1])) * (ref[3] / cur[3])))
+    cr = (ref[0], (ref[1] + ref[2]) / 2)
+    ci = (cur[0], (cur[1] + cur[2]) / 2)
+    print(f"• head match: clip face {cur[3]:.0f}×{cur[2] - cur[1]:.0f}px at ({ci[0]:.0f},{ci[1]:.0f}) → reference "
+          f"{ref[3]:.0f}×{ref[2] - ref[1]:.0f}px at ({cr[0]:.0f},{cr[1]:.0f}); head scale ×{s:.3f}")
+    rx, ry, k = 125.0, 175.0, 1.7
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    d = np.sqrt(((xx - cr[0]) / rx) ** 2 + ((yy - cr[1]) / ry) ** 2)
+    t = np.clip((d - 1) / (k - 1), 0, 1)
+    w = 1 - t * t * (3 - 2 * t)
+    mx = xx + w * (ci[0] + (xx - cr[0]) / s - xx)
+    my = yy + w * (ci[1] + (yy - cr[1]) / s - yy)
+    # Catmull-Rom bicubic sampling (bilinear visibly softens the face): 4×4 taps, weights precomputed
+    def _cr(t: np.ndarray) -> list[np.ndarray]:
+        t2, t3 = t * t, t * t * t
+        return [(-t3 + 2 * t2 - t) / 2, (3 * t3 - 5 * t2 + 2) / 2, (-3 * t3 + 4 * t2 + t) / 2, (t3 - t2) / 2]
+    fxi, fyi = np.floor(mx).astype(np.int32), np.floor(my).astype(np.int32)
+    wx, wy = _cr(mx - fxi), _cr(my - fyi)
+    xs = [np.clip(fxi + k - 1, 0, W - 1) for k in range(4)]
+    ys = [np.clip(fyi + k - 1, 0, H - 1) for k in range(4)]
+    head = w > 1e-4  # only resample where the warp moves anything
+    hy, hx = np.nonzero(head)
+    dec = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(src), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                           stdout=subprocess.PIPE)
+    enc = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                            "-s", f"{W}x{H}", "-framerate", fps_str, "-i", "-", "-an", "-c:v", "ffv1", "-pix_fmt", "yuv444p", str(dst)],
+                           stdin=subprocess.PIPE)
+    while True:
+        buf = dec.stdout.read(W * H * 3)
+        if len(buf) < W * H * 3:
+            break
+        f = np.frombuffer(buf, np.uint8).reshape(H, W, 3).astype(np.float32)
+        o = f.copy()
+        acc = np.zeros((hy.size, 3), np.float32)
+        for j in range(4):
+            row = np.zeros((hy.size, 3), np.float32)
+            for i in range(4):
+                row += f[ys[j][hy, hx], xs[i][hy, hx]] * wx[i][hy, hx][:, None]
+            acc += row * wy[j][hy, hx][:, None]
+        o[hy, hx] = acc
+        enc.stdin.write(np.clip(o + 0.5, 0, 255).astype(np.uint8).tobytes())
+    enc.stdin.close(); enc.wait(); dec.stdout.close(); dec.wait()
+    if enc.returncode:
+        sys.exit("✗ head match: encoder failed")
+    after = _facebox(_frame_rgb(dst, 0.0))
+    print(f"  after: face {after[3]:.0f}×{after[2] - after[1]:.0f}px at ({after[0]:.0f},{(after[1] + after[2]) / 2:.0f})")
+
+
 def build_idle(clip: Path, out: Path, args) -> None:
     """Silent idle loop (he waits, no lip movement) → public/hero/idle.{mp4,webm} + idle-poster.webp.
     Same crop/align/whiten as the hero; audio dropped; seamless picture loop with the same xfade as the hero."""
@@ -702,7 +785,7 @@ def build_idle(clip: Path, out: Path, args) -> None:
     fps = meta["fps"]
     tmp = Path(tempfile.mkdtemp(prefix="idle-"))
     try:
-        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1"
+        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1" + (f",unsharp=lx=5:ly=5:la={args.sharpen}:cx=5:cy=5:ca=0" if args.sharpen else "")
         veil = tmp / "veil.rgba"
         has_veil = write_edge_veil(veil, box, meta["w"], int(fr.get("feather", args.feather)))
         veil_in = ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{OUT_W}x{OUT_H}", "-i", str(veil)] if has_veil else []
@@ -735,6 +818,10 @@ def build_idle(clip: Path, out: Path, args) -> None:
         print(f"• integrity check @ {t_chk:.2f}s: mean |Δ| = {diff:.2f}")
         if diff > 6:
             sys.exit("✗ idle frames don't match the source render — ffmpeg filter issue; aborting")
+        if args.head_match:
+            hm = tmp / "idle-head.mkv"
+            head_match(video_tmp, hm, meta["fps_str"], head_reference(out))
+            video_tmp = hm
         if args.bg_key:
             keyed = tmp / "idle-keyed.mkv"
             bg_key(video_tmp, keyed, meta["fps_str"], args.bg_key)
@@ -799,7 +886,7 @@ def build_idle_door(clip: Path, out: Path, args) -> None:
     box, whiten, fr = match_framing(clip, meta, fr, args, [(t_s, min(t_s + 1.0, t_e)), (max(t_e - 1.0, t_s), t_e)])
     tmp = Path(tempfile.mkdtemp(prefix="idle-door-"))
     try:
-        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1"
+        still_chain = f"{whiten},{box.filter()},scale={OUT_W}:{OUT_H}:flags=lanczos+accurate_rnd+full_chroma_int,setsar=1" + (f",unsharp=lx=5:ly=5:la={args.sharpen}:cx=5:cy=5:ca=0" if args.sharpen else "")
         veil = tmp / "veil.rgba"
         has_veil = write_edge_veil(veil, box, meta["w"], int(fr.get("feather", args.feather)))
         veil_in = ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{OUT_W}x{OUT_H}", "-i", str(veil)] if has_veil else []
@@ -809,6 +896,10 @@ def build_idle_door(clip: Path, out: Path, args) -> None:
         video_tmp = tmp / "door.mkv"
         ffmpeg("-ss", f"{s0 / fps}", "-i", str(clip), *veil_in, "-filter_complex", fc, "-map", "[v]",
                "-frames:v", str(N), "-an", "-c:v", "ffv1", str(video_tmp))
+        if args.head_match:
+            hm = tmp / "door-head.mkv"
+            head_match(video_tmp, hm, meta["fps_str"], head_reference(out))
+            video_tmp = hm
         if args.bg_key:
             keyed = tmp / "door-keyed.mkv"
             bg_key(video_tmp, keyed, meta["fps_str"], args.bg_key)
@@ -849,6 +940,11 @@ def main() -> None:
                     help="output px over which the picture fades into the white side padding (default 72)")
     ap.add_argument("--whiten-max", type=float, default=None,
                     help="colorlevels max for all channels (default: auto from the backdrop, capped at 0.98)")
+    ap.add_argument("--head-match", action="store_true",
+                    help="--idle/--idle-door: scale/move the head onto the hero/answer clips' face box with a local warp "
+                         "(for Flow takes rendered with a different head-to-body ratio; body/feet stay aligned)")
+    ap.add_argument("--sharpen", type=float, default=0.0,
+                    help="--idle/--idle-door: luma unsharp amount (e.g. 0.8) for a softer source render")
     ap.add_argument("--pingpong", action="store_true",
                     help="--idle: loop forward then reversed instead of the xfade (for clips whose first/last poses differ, e.g. a slow head tilt)")
     ap.add_argument("--bg-key", choices=["plate", "luma"], default=None,
