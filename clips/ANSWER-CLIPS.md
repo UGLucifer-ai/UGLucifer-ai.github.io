@@ -1124,6 +1124,8 @@ Do not add anything that is not explicitly requested above.
 
 > Thanks for asking! You can reach me through the contact section or LinkedIn below. I'd love to hear from you.
 
+**Shipped clip:** `inputs/answers/contact.mp4` (approved; built with `--tail 0.75` so it ends with his hands back in his pockets).
+
 **Résumé source:** Résumé header (email, phone, LinkedIn). Deliberately does not read out the email or phone number; the bubble shows them as links.
 
 **Google Flow prompt:**

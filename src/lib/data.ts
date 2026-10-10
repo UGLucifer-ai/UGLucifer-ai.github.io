@@ -238,7 +238,7 @@ export const ANSWER_CLIP_IDS: AnswerClipId[] = [
   "cicd",
   "tools",
   "resume",
-  // still to come: "contact",
+  "contact",
 ];
 
 /**
@@ -247,6 +247,7 @@ export const ANSWER_CLIP_IDS: AnswerClipId[] = [
  */
 export const ANSWER_CLIP_SPEECH: Partial<Record<AnswerClipId, [number, number]>> = {
   resume: [0.24, 3.29], // kept a 1.8 s silent tail so he ends with his hands back in his pockets
+  contact: [0.22, 5.86], // 0.75 s tail, same reason
 };
 
 export function answerClip(id: string): AnswerClip | null {
