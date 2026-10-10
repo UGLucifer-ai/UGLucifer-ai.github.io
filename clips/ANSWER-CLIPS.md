@@ -31,9 +31,9 @@ Every script is first person, about 15–22 words (6–8 seconds spoken; Flow cl
 | `kubernetes` | Kubernetes experience? | 20 | I've run Kubernetes on EKS, AKS and OpenShift, handling upgrades, autoscaling and troubleshooting, and deploying with Helm and Argo CD. |
 | `aws` | AWS experience? | 18 | I'm hands-on with AWS: EC2, EKS, VPC and IAM. At JPMC I build secure infrastructure for banking applications. |
 | `cicd` | CI/CD experience? | 18 | I've built CI/CD pipelines with Jenkins, GitHub Actions and Azure DevOps, automating builds, testing, security scans and rollbacks. |
-| `tools` | What tools do you use? | 21 | My core stack is AWS, Azure and Google Cloud, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana. |
+| `tools` | What tools do you use? | 20 | My core stack is AWS, Azure and GCP, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana. |
 | `contact` | How can I contact you? | 20 | Thanks for asking! You can reach me through the contact section or LinkedIn below. I'd love to hear from you. |
-| `resume` | Download résumé | 14 | Sure, it's downloading now. If it doesn't start, just use the download button below. |
+| `resume` | Download résumé | 9 | Sure, please grab my résumé with the button below. |
 
 ## 1. `who` — "Who are you?"
 
@@ -964,11 +964,13 @@ Do not add anything that is not explicitly requested above.
 
 **Save as:** `inputs/answers/tools.mp4` · **Build:** `python3 scripts/build-hero-assets.py --answer tools inputs/answers/tools.mp4`
 
-**Spoken script (21 words):**
+**Spoken script (20 words):**
 
-> My core stack is AWS, Azure and Google Cloud, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana.
+> My core stack is AWS, Azure and GCP, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana.
 
-**Résumé source:** Technical Skills table: Cloud Platforms (AWS, Microsoft Azure, Google Cloud Platform (GCP)), Containers & Orchestration (Kubernetes, Docker, Helm, Argo CD), IaC (Terraform, Ansible), CI/CD (Jenkins), Monitoring (Prometheus, Grafana).
+**Shipped clip:** `inputs/answers/tools.mp4` (approved; says "GCP").
+
+**Résumé source:** Technical Skills table: Cloud Platforms (AWS, Microsoft Azure, GCP), Containers & Orchestration (Kubernetes, Docker, Helm, Argo CD), IaC (Terraform, Ansible), CI/CD (Jenkins), Monitoring (Prometheus, Grafana).
 
 **Google Flow prompt:**
 
@@ -1006,13 +1008,13 @@ PERFORMANCE:
 The character is answering a visitor's question directly to the camera.
 
 EXACT SPOKEN SCRIPT:
-"My core stack is AWS, Azure and Google Cloud, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana."
+"My core stack is AWS, Azure and GCP, plus Kubernetes, Docker, Helm, Argo CD, Terraform, Ansible, Jenkins, Prometheus and Grafana."
 
 VOICE:
 - Natural male voice, the same voice as in his intro video.
 - Friendly, confident, professional tone.
 - Natural speaking speed; the whole script takes about 6 to 8 seconds.
-- Clear pronunciation. Say "AWS" as "A-W-S" and "Argo CD" as "AR-go C-D".
+- Clear pronunciation. Say "AWS" as "A-W-S", "GCP" as "G-C-P" and "Argo CD" as "AR-go C-D".
 - Accurate lip synchronization.
 - The complete script must be spoken continuously from beginning to end.
 - Do not pause unnaturally.
@@ -1275,9 +1277,11 @@ Do not add anything that is not explicitly requested above.
 
 **Save as:** `inputs/answers/resume.mp4` · **Build:** `python3 scripts/build-hero-assets.py --answer resume inputs/answers/resume.mp4`
 
-**Spoken script (14 words):**
+**Spoken script (9 words):**
 
-> Sure, it's downloading now. If it doesn't start, just use the download button below.
+> Sure, please grab my résumé with the button below.
+
+**Shipped clip:** `inputs/answers/resume.mp4` (approved; built with `--tail 1.8` so it ends with his hands back in his pockets; the chip still downloads the PDF).
 
 **Résumé source:** The résumé PDF itself (public/resume.pdf, downloaded by the chip). No factual claims.
 
@@ -1317,13 +1321,13 @@ PERFORMANCE:
 The character is answering a visitor's question directly to the camera.
 
 EXACT SPOKEN SCRIPT:
-"Sure, it's downloading now. If it doesn't start, just use the download button below."
+"Sure, please grab my résumé with the button below."
 
 VOICE:
 - Natural male voice, the same voice as in his intro video.
 - Friendly, confident, professional tone.
 - Natural speaking speed; the whole script takes about 6 to 8 seconds.
-- Clear pronunciation.
+- Clear pronunciation. Say "résumé" as "REZ-oo-may".
 - Accurate lip synchronization.
 - The complete script must be spoken continuously from beginning to end.
 - Do not pause unnaturally.

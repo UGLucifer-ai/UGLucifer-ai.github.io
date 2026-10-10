@@ -12,7 +12,7 @@ function splitRole(role: string): [string, string] {
   return [parts.slice(0, -1).join(" "), parts[parts.length - 1]];
 }
 
-type ActiveClip = { id: string; cb: ClipCallbacks; srcs: string[]; tried: number; started: boolean };
+type ActiveClip = { id: string; cb: ClipCallbacks; srcs: string[]; tried: number; started: boolean; speech?: [number, number] };
 
 export default function Hero() {
   const sectionRef = useRef<HTMLElement>(null);
@@ -176,7 +176,7 @@ export default function Hero() {
       }
       const webmFirst = a.canPlayType('video/webm; codecs="vp9, opus"') === "probably";
       const srcs = (webmFirst ? [clip.webm, clip.mp4] : [clip.mp4, clip.webm]).map(asset);
-      clipRef.current = { id, cb, srcs, tried: 0, started: false };
+      clipRef.current = { id, cb, srcs, tried: 0, started: false, speech: clip.speech };
       // the chip click is a user gesture: play with sound unless the visitor explicitly muted
       a.muted = userMutedRef.current;
       a.poster = asset(clip.poster);
@@ -204,7 +204,7 @@ export default function Hero() {
         v.pause(); // the intro's own voice must not talk over the answer
       }
       setAnswering(true);
-      clip.cb.onStart(() => (a.duration > 0 && Number.isFinite(a.duration) ? a.currentTime / a.duration : 0), a.duration);
+      clip.cb.onStart(() => (a.duration > 0 && Number.isFinite(a.duration) ? a.currentTime / a.duration : 0), a.duration, clip.speech);
     };
     const onEnded = () => {
       const clip = clipRef.current;

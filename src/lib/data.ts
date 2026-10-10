@@ -222,7 +222,7 @@ export const HERO: HeroMedia = {
 
 /** Suggested "Ask me" chips that can have a lip-synced answer clip. */
 export type AnswerClipId = "who" | "whatdo" | "current" | "kubernetes" | "aws" | "cicd" | "tools" | "contact" | "resume";
-export type AnswerClip = { webm: string; mp4: string; poster: string };
+export type AnswerClip = { webm: string; mp4: string; poster: string; speech?: [number, number] };
 
 /**
  * Answer-clip manifest. Add a chip id here once `scripts/build-hero-assets.py --answer <id> inputs/answers/<id>.mp4`
@@ -236,12 +236,27 @@ export const ANSWER_CLIP_IDS: AnswerClipId[] = [
   "kubernetes",
   "aws",
   "cicd",
-  // still to come: "tools", "contact", "resume",
+  "tools",
+  "resume",
+  // still to come: "contact",
 ];
+
+/**
+ * Where the words sit inside a clip (seconds), for caption pacing — only for clips whose silence around the
+ * speech isn't the default 0.2 s (build-hero-assets.py --answer prints the values when needed).
+ */
+export const ANSWER_CLIP_SPEECH: Partial<Record<AnswerClipId, [number, number]>> = {
+  resume: [0.24, 3.29], // kept a 1.8 s silent tail so he ends with his hands back in his pockets
+};
 
 export function answerClip(id: string): AnswerClip | null {
   if (!HERO.enabled || !(ANSWER_CLIP_IDS as string[]).includes(id)) return null;
-  return { webm: `/hero/answers/${id}.webm`, mp4: `/hero/answers/${id}.mp4`, poster: `/hero/answers/${id}-poster.webp` };
+  return {
+    webm: `/hero/answers/${id}.webm`,
+    mp4: `/hero/answers/${id}.mp4`,
+    poster: `/hero/answers/${id}-poster.webp`,
+    speech: ANSWER_CLIP_SPEECH[id as AnswerClipId],
+  };
 }
 
 export const QUICK_FACTS: QuickFact[] = [

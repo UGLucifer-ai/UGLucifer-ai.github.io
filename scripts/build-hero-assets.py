@@ -503,7 +503,7 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
         if sb:
             on, off = sb
             t0 = max(0.0, math.floor((on - args.lead) * fps) / fps)
-            t1 = min(last, math.ceil((off + args.lead) * fps) / fps)
+            t1 = min(last, math.ceil((off + (args.lead if args.tail is None else args.tail)) * fps) / fps)
             print(f"• speech {on:.3f}s → {off:.3f}s; keeping {t0:.3f}s → {t1:.3f}s ({on - t0:.2f}s lead-in, {t1 - off:.2f}s tail)")
         else:
             print("  ! no speech found — keeping the whole clip")
@@ -511,6 +511,11 @@ def build_answer(clip: Path, aid: str, out: Path, args) -> None:
         print("  ! clip has no audio — keeping the whole clip, silent track")
     N = max(1, int(round((t1 - t0) * fps)))
     length = N / fps
+    if audio is not None and sb:
+        lead_in, speech_end = on - t0, min(off, t1) - t0
+        if abs(lead_in - args.lead) > 0.06 or abs((length - speech_end) - args.lead) > 0.06:
+            print(f"  ! speech sits at {lead_in:.2f}–{speech_end:.2f}s in the output: add "
+                  f"{aid}: [{lead_in:.2f}, {speech_end:.2f}] to ANSWER_CLIP_SPEECH in src/lib/data.ts (caption pacing)")
 
     tmp = Path(tempfile.mkdtemp(prefix=f"answer-{aid}-"))
     try:
@@ -599,6 +604,9 @@ def main() -> None:
     ap.add_argument("--answer", metavar="ID",
                     help="build an 'Ask me' answer clip from INPUT → public/hero/answers/ID.{mp4,webm} + ID-poster.webp "
                          f"(chip ids: {', '.join(ANSWER_IDS)})")
+    ap.add_argument("--tail", type=float, default=None,
+                    help="--answer: seconds kept after the speech ends (default = --lead); raise it to keep the silent "
+                         "part where he settles back into the hands-in-pockets pose")
     ap.add_argument("--speech-db", type=float, default=-45.0,
                     help="--answer: speech threshold in dB below the peak (default -45; raise to e.g. -30 if breaths "
                          "or room noise before/after the words keep the silence trim from working)")

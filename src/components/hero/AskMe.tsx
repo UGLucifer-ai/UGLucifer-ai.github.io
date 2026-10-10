@@ -26,7 +26,7 @@ const loadKB = () => (kbPromise ??= import("@/lib/askme"));
 
 export type ClipCallbacks = {
   /** the clip is on screen; `progress()` → 0…1 of its playback, for pacing the caption */
-  onStart: (progress: () => number, duration: number) => void;
+  onStart: (progress: () => number, duration: number, speech?: [number, number]) => void;
   onEnd: () => void;
   /** the clip couldn't be loaded → answer text-only */
   onFail: () => void;
@@ -59,7 +59,7 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
   heroRef.current = hero;
   const tokenRef = useRef(0);
   const shownRef = useRef(0);
-  const progressRef = useRef<{ get: () => number; d: number } | null>(null);
+  const progressRef = useRef<{ get: () => number; d: number; speech?: [number, number] } | null>(null);
   const text = answer?.text ?? GREETING;
   const done = shown >= text.length;
 
@@ -76,9 +76,9 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
     if (id) {
       // start the clip synchronously, inside the click (user gesture → sound allowed)
       const ok = heroRef.current.playAnswer(id, {
-        onStart: (get, d) => {
+        onStart: (get, d, speech) => {
           if (token !== tokenRef.current) return;
-          progressRef.current = { get, d };
+          progressRef.current = { get, d, speech };
           m = "clip";
           if (loaded) setMode("clip");
         },
@@ -131,9 +131,9 @@ export default function AskMe({ hero }: { hero: AskMeHero }) {
     const tick = (now: number) => {
       let n: number;
       if (mode === "clip" && progressRef.current) {
-        const { get, d } = progressRef.current;
-        const speech = Math.max(0.5, d - 2 * LEAD);
-        const p = Math.min(1, Math.max(0, (get() * d - LEAD) / speech) * 1.06); // a hair ahead of the voice
+        const { get, d, speech } = progressRef.current;
+        const [s0, s1] = speech ?? [LEAD, d - LEAD];
+        const p = Math.min(1, Math.max(0, (get() * d - s0) / Math.max(0.5, s1 - s0)) * 1.06); // a hair ahead of the voice
         n = Math.max(shownRef.current, Math.ceil(len * p));
       } else n = Math.min(len, from + Math.floor(((now - t0) / 1000) * 70));
       if (n !== shownRef.current) reveal(n);
