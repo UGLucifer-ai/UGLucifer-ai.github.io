@@ -81,7 +81,7 @@ export default function Contact() {
                   ))}
                 </ul>
               </div>
-              <a href={PROFILE.email ? `mailto:${PROFILE.email}` : "#contact"} className="badge" aria-label="Say hello by email">
+              <a href={PROFILE.email ? `mailto:${PROFILE.email}` : "#contact"} className="c-badge" aria-label="Say hello by email">
                 <svg viewBox="0 0 200 200" aria-hidden="true">
                   <defs>
                     <path id="badge-circle" d="M100,100 m-78,0 a78,78 0 1,1 156,0 a78,78 0 1,1 -156,0" />
@@ -123,11 +123,11 @@ export default function Contact() {
         .contact-links .mono{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute)}
         .contact-links a{font-size:18px;font-weight:600}
         .contact-links a:hover{text-decoration:underline;text-underline-offset:4px}
-        .badge{position:relative;flex:none;width:150px;height:150px;display:grid;place-items:center}
-        .badge svg{position:absolute;inset:0;width:100%;height:100%;animation:spin 18s linear infinite}
-        .badge text{font:500 15px var(--font-mono);letter-spacing:.14em;text-transform:uppercase;fill:var(--ink)}
+        .c-badge{position:relative;flex:none;width:150px;height:150px;display:grid;place-items:center}
+        .c-badge svg{position:absolute;inset:0;width:100%;height:100%;animation:spin 18s linear infinite}
+        .c-badge text{font:500 15px var(--font-mono);letter-spacing:.14em;text-transform:uppercase;fill:var(--ink)}
         .badge-c{width:56px;height:56px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:20px;transition:transform .6s var(--ease)}
-        .badge:hover .badge-c{transform:rotate(45deg) scale(1.06)}
+        .c-badge:hover .badge-c{transform:rotate(45deg) scale(1.06)}
         @keyframes spin{to{transform:rotate(360deg)}}
         .foot{border-top:1px solid var(--line);padding:28px 0}
         .foot-in{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;font-size:14px;color:var(--mute)}
@@ -136,7 +136,7 @@ export default function Contact() {
         .foot-in .mono{font-size:12px}
         @media (max-width: 720px){
           .contact-row{flex-direction:column;align-items:flex-start}
-          .badge{width:120px;height:120px}
+          .c-badge{width:120px;height:120px}
         }
       `}</style>
     </>
